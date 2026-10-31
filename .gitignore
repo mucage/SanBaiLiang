@@ -1,0 +1,26 @@
+# Gradle / Android 构建产物
+.gradle/
+.kotlin/
+build/
+*/build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.iml
+.idea/
+
+# 本机配置与签名密钥（绝不提交）
+local.properties
+release.jks
+*.jks
+*.keystore
+keystore.properties
+secrets.properties
+
+# 个人数据与分发产物（账本 JSON、APK 等）
+artifacts/
+bak/
+
+# 杂项
+.DS_Store
+*.log

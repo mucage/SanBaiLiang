@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 启动图标前景：白色圆盘 + 金色 ¥ 符号 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="320"
+    android:viewportHeight="320">
+    <!-- 白色圆盘 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M160,52 a108,108 0 1,0 0,216 a108,108 0 1,0 0,-216" />
+    <!-- ¥ 左斜 -->
+    <path
+        android:strokeColor="#FFF5B301"
+        android:strokeWidth="17"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M100,80 L160,150" />
+    <!-- ¥ 右斜 -->
+    <path
+        android:strokeColor="#FFF5B301"
+        android:strokeWidth="17"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M220,80 L160,150" />
+    <!-- ¥ 横线 -->
+    <path
+        android:strokeColor="#FFF5B301"
+        android:strokeWidth="17"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M112,160 L208,160" />
+    <!-- ¥ 竖线 -->
+    <path
+        android:strokeColor="#FFF5B301"
+        android:strokeWidth="17"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M160,150 L160,252" />
+</vector>
