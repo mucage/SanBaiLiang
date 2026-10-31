@@ -1,0 +1,72 @@
+# 此地无银三百两 · SanBaiLiang
+
+一个完全本地运行的记账应用：**Android 端 + Windows 桌面端**。账目、余额与 AI 密钥只保存在本机，两端通过手动导入/导出 JSON 账本文件同步（含余额与删除）。
+
+> 界面中的 q 版装饰贴图由 AI 生成，非官方素材，详见「界面贴图」一节。
+
+## 功能
+
+- **快速记账**：金额键盘、支出/收入切换、自定义日期与备注
+- **固定六类资金用途**：吃、用、玩、学、出行、其他，不再支持自定义分类
+- **自动记账**：监听微信、支付宝、云闪付及招商银行/工商银行等银行 App 通知，并解析银行短信；识别结果进入「待确认」，确认后入账
+- **限额提醒**：月限额、日限额、离日限额还有多少元提醒；支出达到月限额 25% / 50% / 75% 且进度快于日期时，AI 提示开销过大
+- **批量操作**：长按多选，批量删除或设置「不计入当日限额 / 不计入限额」
+- **统计**：日 / 周 / 月 / 年 / 自定义区间的收支与分类占比
+- **资产**：以「余额锚点 + 基准日后净收支」计算当前总余额，可随时重新核对
+- **AI 个性评价**：使用自备 DeepSeek API Key 生成明细页点评，密钥仅存本机
+- **双端同步**：统一 JSON 账本，`syncId` 去重 + `updatedAt` 最后写入胜出，删除通过墓碑标记跨端传播
+
+## 工程结构
+
+| 模块 | 说明 |
+| --- | --- |
+| `app/` | Android 应用，Kotlin + Jetpack Compose + Room |
+| `sync/` | 两端共享的同步协议、固定分类与合并规则（纯 Kotlin/JVM） |
+| `desktop/` | Compose Desktop 桌面端，打包为 Windows amd64 app-image |
+
+## 构建
+
+要求：JDK 17、Android SDK 35。
+
+```bash
+# Android 发行 APK
+./gradlew :app:assembleRelease
+
+# Windows 桌面端（输出到 desktop/build/compose/binaries/main/app/MucageLedger）
+./gradlew :desktop:packageAppImage
+```
+
+签名配置从本机 `local.properties` 读取（该文件已被忽略，不会进入仓库）：
+
+```properties
+RELEASE_STORE_FILE=release.jks
+RELEASE_STORE_PASSWORD=你的口令
+RELEASE_KEY_ALIAS=mucage
+RELEASE_KEY_PASSWORD=你的口令
+```
+
+本机没有 keystore 时会构建未签名的发行包，方便直接 clone 后编译调试。
+
+## 两端同步
+
+1. 手机「设置 → 数据同步 → 导出到文件」，得到 `此地无银三百两-账本-*.json`
+2. 把文件传到电脑，桌面端点「打开/合并」，或直接用文件参数启动：
+   `MucageLedger.exe "此地无银三百两-账本-20261031-1200.json"`
+3. 在电脑上增删改账目、设置余额后点「导出」
+4. 把新文件传回手机，在「设置 → 数据同步 → 从文件导入」，合并结果会显示新增/更新/跳过数量
+
+删除不会立即跨端生效，而是留下删除墓碑；下一次导入时另一端会同步删除。余额以基准日与 `updatedAt` 较新的锚点为准。
+
+## 隐私与数据
+
+- 账目、余额、API Key 均只保存在设备本地，不上传任何服务器
+- 仓库中不包含账本数据、签名密钥或 API 密钥
+- 同步文件由用户自行传输，不经过第三方服务
+
+## 界面贴图
+
+`app/src/main/res/drawable-nodpi/nahida_*.jpg` 与 `desktop/src/main/resources/images/nahida_*.jpg` 为 **AI 生成的 q 版装饰图**（形象灵感来自《原神》纳西妲，非官方素材、非官方授权）。仅用于界面点缀，可自行替换或删除。
+
+## 许可证
+
+本项目基于 [GNU GPL v3.0](LICENSE) 开源。
