@@ -28,7 +28,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.AppImage)
             packageName = "MucageLedger"
-            packageVersion = "1.0.0"
+            packageVersion = "10.27.0"
             // jpackage 在中文 Windows 下读取 UTF-8 参数文件会乱码，描述保持纯 ASCII
             description = "Mucage Ledger - manual bill and balance sync between phone and PC"
             vendor = "mucage"
