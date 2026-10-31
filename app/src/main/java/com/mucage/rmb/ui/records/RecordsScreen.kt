@@ -385,7 +385,11 @@ private fun RecordRow(
                 LimitExempt.SKIP_ALL -> "不计限额"
                 else -> null
             } else null
-            val sub = listOfNotNull(record.note.takeIf { it.isNotBlank() }, exemptTag).joinToString(" · ")
+            val sub = listOfNotNull(
+                DateUtils.formatTime(record.date).takeIf { DateUtils.hasTimeOfDay(record.date) },
+                record.note.takeIf { it.isNotBlank() },
+                exemptTag
+            ).joinToString(" · ")
             if (sub.isNotBlank()) {
                 Text(
                     sub,

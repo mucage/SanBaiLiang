@@ -14,6 +14,9 @@ object SettingsPrefs {
     private const val KEY_AI_PROMPT = "ai_prompt"
     private const val KEY_AI_COMMENT = "ai_comment"
     private const val KEY_AI_COMMENT_SIG = "ai_comment_signature"
+    private const val KEY_BACKGROUND_URI = "background_uri"
+    private const val KEY_BACKGROUND_ALPHA = "background_alpha"
+    private const val KEY_BACKGROUND_ENABLED = "background_enabled"
 
     private fun prefs(context: Context) =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -88,5 +91,30 @@ object SettingsPrefs {
 
     fun setSavedCommentSignature(context: Context, signature: String) {
         prefs(context).edit().putString(KEY_AI_COMMENT_SIG, signature).apply()
+    }
+
+    /** 自定义界面背景图片的持久化 URI，null 表示使用内置背景 */
+    fun getBackgroundUri(context: Context): String? =
+        prefs(context).getString(KEY_BACKGROUND_URI, null)
+
+    fun setBackgroundUri(context: Context, uri: String?) {
+        val editor = prefs(context).edit()
+        if (uri.isNullOrBlank()) editor.remove(KEY_BACKGROUND_URI) else editor.putString(KEY_BACKGROUND_URI, uri)
+        editor.apply()
+    }
+
+    /** 背景不透明度（百分比），默认 50 */
+    fun getBackgroundAlpha(context: Context): Int = prefs(context).getInt(KEY_BACKGROUND_ALPHA, 50)
+
+    fun setBackgroundAlpha(context: Context, alpha: Int) {
+        prefs(context).edit().putInt(KEY_BACKGROUND_ALPHA, alpha.coerceIn(0, 100)).apply()
+    }
+
+    /** 是否显示背景图，默认开启 */
+    fun isBackgroundEnabled(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_BACKGROUND_ENABLED, true)
+
+    fun setBackgroundEnabled(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean(KEY_BACKGROUND_ENABLED, enabled).apply()
     }
 }

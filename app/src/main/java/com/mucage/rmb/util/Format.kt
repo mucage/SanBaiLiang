@@ -115,6 +115,23 @@ object DateUtils {
     /** 例如：14:30 */
     fun formatTime(ms: Long): String = fmt("HH:mm", ms)
 
+    /** 该时间戳是否带有具体的时分（老数据多为当天 0 点，视为没有时间） */
+    fun hasTimeOfDay(ms: Long): Boolean {
+        val c = calendarOf(ms)
+        return c.get(Calendar.HOUR_OF_DAY) != 0 || c.get(Calendar.MINUTE) != 0
+    }
+
+    /** 取 dateMs 的年月日，搭配 timeSourceMs 的时分秒，合成新的时间戳 */
+    fun mergeDateAndTime(dateMs: Long, timeSourceMs: Long): Long {
+        val date = calendarOf(dateMs)
+        val time = calendarOf(timeSourceMs)
+        date.set(Calendar.HOUR_OF_DAY, time.get(Calendar.HOUR_OF_DAY))
+        date.set(Calendar.MINUTE, time.get(Calendar.MINUTE))
+        date.set(Calendar.SECOND, time.get(Calendar.SECOND))
+        date.set(Calendar.MILLISECOND, time.get(Calendar.MILLISECOND))
+        return date.timeInMillis
+    }
+
     /** 例如：8月4日 周二 */
     fun formatDayWithWeek(ms: Long): String = fmt("M月d日 EEE", ms)
 

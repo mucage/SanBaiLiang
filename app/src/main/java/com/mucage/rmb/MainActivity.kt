@@ -35,6 +35,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
@@ -53,6 +54,8 @@ import com.mucage.rmb.ui.assets.InitialBalanceScreen
 import com.mucage.rmb.ui.records.RecordsScreen
 import com.mucage.rmb.ui.settings.SettingsScreen
 import com.mucage.rmb.ui.stats.StatsScreen
+import com.mucage.rmb.ui.theme.AppBackground
+import com.mucage.rmb.ui.theme.BackgroundState
 import com.mucage.rmb.ui.theme.JianZhangTheme
 import kotlinx.coroutines.launch
 
@@ -62,9 +65,12 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         Repository.init(this)
         NotificationHelper.ensureChannel(this)
+        BackgroundState.load(this)
         setContent {
             JianZhangTheme {
-                AppRoot()
+                AppBackground {
+                    AppRoot()
+                }
             }
         }
     }
@@ -148,7 +154,7 @@ private fun MainApp() {
     }
 
     Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
+        containerColor = Color.Transparent,
         bottomBar = {
             NavigationBar {
                 tabs.forEachIndexed { index, tab ->

@@ -40,6 +40,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -78,6 +79,8 @@ import com.mucage.rmb.data.RecordType
 import com.mucage.rmb.data.Repository
 import com.mucage.rmb.ui.add.ConfirmAutoRecordDialog
 import com.mucage.rmb.ui.components.categoryIcon
+import com.mucage.rmb.ui.theme.BackgroundPreview
+import com.mucage.rmb.ui.theme.BackgroundState
 import com.mucage.rmb.ui.theme.ExpenseColor
 import com.mucage.rmb.ui.theme.IncomeColor
 import com.mucage.rmb.util.DateUtils
@@ -87,6 +90,7 @@ import com.mucage.rmb.util.formatCents
 import com.mucage.rmb.util.formatCentsWithSymbol
 import com.mucage.rmb.util.parseAmountToCents
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /** 设置页：资金用途（固定分类）展示、自动记账、限额、AI、数据同步与关于 */
 @OptIn(ExperimentalLayoutApi::class)
@@ -184,7 +188,7 @@ fun SettingsScreen(contentPadding: PaddingValues) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Outlined.Info, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text("此地无银三百两 v102.7.0", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Text("此地无银三百两 v102.8.0", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.weight(1f))
                     Image(
                         painter = painterResource(R.drawable.nahida_cheer),
@@ -204,7 +208,66 @@ fun SettingsScreen(contentPadding: PaddingValues) {
                 )
             }
         }
+        Spacer(Modifier.height(16.dp))
+
+        // 界面背景
+        SectionTitle("界面背景")
+        BackgroundSection()
+
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+/** 界面背景：内置图片为默认，可换成相册图片，并调节不透明度 */
+@Composable
+private fun BackgroundSection() {
+    val context = LocalContext.current
+    val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) BackgroundState.pick(context, uri)
+    }
+    val alpha = BackgroundState.alpha
+    val enabled = BackgroundState.enabled
+    val hasCustom = BackgroundState.customUri != null
+
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                BackgroundPreview(Modifier.size(64.dp))
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("自定义背景图片", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        if (hasCustom) "当前使用相册里的图片" else "当前使用内置背景图",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Switch(checked = enabled, onCheckedChange = { BackgroundState.setEnabled(context, it) })
+            }
+            Spacer(Modifier.height(10.dp))
+            Text("背景不透明度 $alpha%", style = MaterialTheme.typography.bodySmall)
+            Slider(
+                value = alpha.toFloat(),
+                onValueChange = { BackgroundState.setAlpha(context, it.roundToInt()) },
+                valueRange = 0f..100f
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Button(onClick = { pickImage.launch(arrayOf("image/*")) }) { Text("选择图片") }
+                Spacer(Modifier.width(8.dp))
+                TextButton(onClick = { BackgroundState.reset(context) }) { Text("恢复默认") }
+            }
+            Text(
+                "背景图只保存在本机，不会随账本同步；默认不透明度 50%，可在 0%～100% 之间调整。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 

@@ -22,6 +22,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Schedule
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
@@ -36,7 +38,9 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TimePicker
 import androidx.compose.material3.rememberDatePickerState
+import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -68,6 +72,7 @@ import com.mucage.rmb.util.DateUtils
 import com.mucage.rmb.util.centsToInput
 import com.mucage.rmb.util.parseAmountToCents
 import com.mucage.rmb.util.todayStartMillis
+import java.util.Calendar
 import kotlinx.coroutines.launch
 
 /** 记账全屏对话框：新建或编辑一笔账目 */
@@ -105,9 +110,10 @@ private fun AddRecordContent(
     var categoryId by rememberSaveable(editing) {
         mutableLongStateOf(editing?.categoryId ?: 0L)
     }
-    var date by rememberSaveable(editing) { mutableLongStateOf(editing?.date ?: todayStartMillis()) }
+    var date by rememberSaveable(editing) { mutableLongStateOf(editing?.date ?: System.currentTimeMillis()) }
     var note by rememberSaveable(editing) { mutableStateOf(editing?.note ?: "") }
     var showDatePicker by remember { mutableStateOf(false) }
+    var showTimePicker by remember { mutableStateOf(false) }
 
     val categories by Repository.categoryDao.observeByType(type).collectAsState(initial = emptyList())
 
@@ -215,7 +221,7 @@ private fun AddRecordContent(
             }
         }
 
-        // 日期 + 备注
+        // 日期 + 时间 + 备注
         Spacer(Modifier.height(14.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = { showDatePicker = true }) {
@@ -223,16 +229,20 @@ private fun AddRecordContent(
                 Spacer(Modifier.width(4.dp))
                 Text(DateUtils.formatFullDate(date))
             }
-            Spacer(Modifier.width(8.dp))
-            OutlinedTextField(
-                value = note,
-                onValueChange = { note = it.take(60) },
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("备注（选填）") },
-                singleLine = true,
-                shape = RoundedCornerShape(10.dp)
-            )
+            TextButton(onClick = { showTimePicker = true }) {
+                Icon(Icons.Outlined.Schedule, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text(DateUtils.formatTime(date))
+            }
         }
+        OutlinedTextField(
+            value = note,
+            onValueChange = { note = it.take(60) },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("备注（选填）") },
+            singleLine = true,
+            shape = RoundedCornerShape(10.dp)
+        )
 
         // 数字键盘 + 保存
         AmountKeypad(
@@ -261,7 +271,7 @@ private fun AddRecordContent(
             onDismissRequest = { showDatePicker = false },
             confirmButton = {
                 TextButton(onClick = {
-                    dateState.selectedDateMillis?.let { date = it }
+                    dateState.selectedDateMillis?.let { date = DateUtils.mergeDateAndTime(it, date) }
                     showDatePicker = false
                 }) { Text("确定") }
             },
@@ -270,6 +280,45 @@ private fun AddRecordContent(
             }
         ) {
             DatePicker(state = dateState)
+        }
+    }
+
+    if (showTimePicker) {
+        val clock = remember(date) { Calendar.getInstance().apply { timeInMillis = date } }
+        val timeState = rememberTimePickerState(
+            initialHour = clock.get(Calendar.HOUR_OF_DAY),
+            initialMinute = clock.get(Calendar.MINUTE),
+            is24Hour = true
+        )
+        Dialog(
+            onDismissRequest = { showTimePicker = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(0.94f),
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surface
+            ) {
+                Column(Modifier.padding(horizontal = 12.dp, vertical = 16.dp)) {
+                    Text("选择时间", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(12.dp))
+                    TimePicker(state = timeState)
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(onClick = { showTimePicker = false }) { Text("取消") }
+                        TextButton(onClick = {
+                            val picked = Calendar.getInstance().apply {
+                                set(Calendar.HOUR_OF_DAY, timeState.hour)
+                                set(Calendar.MINUTE, timeState.minute)
+                            }.timeInMillis
+                            date = DateUtils.mergeDateAndTime(date, picked)
+                            showTimePicker = false
+                        }) { Text("确定") }
+                    }
+                }
+            }
         }
     }
 }
