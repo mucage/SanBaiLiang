@@ -149,7 +149,7 @@ private val timeFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:m
 fun main(args: Array<String>) {
     if (args.any { it == "--mcp" }) {
         com.mucage.rmb.desktop.mcp.McpServer.run()
-        return
+        kotlin.system.exitProcess(0)
     }
     application {
         val initialFile = args.firstOrNull()?.let { path -> runCatching { File(path) }.getOrNull() }

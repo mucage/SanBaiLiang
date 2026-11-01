@@ -1,6 +1,6 @@
 # MCP 调用指南 · 此地无银三百两（电脑端）
 
-> 适用版本：**10.27.1** 及以后 · 仅 Windows 桌面端  
+> 适用版本：**10.27.2** 及以后 · 仅 Windows 桌面端  
 > 手机端不提供 MCP 接口。
 
 ## 1. 是什么
@@ -16,7 +16,7 @@
 
 ## 2. 使用前准备
 
-1. Windows 桌面端版本 ≥ 10.27.1。
+1. Windows 桌面端版本 ≥ 10.27.2。
 2. **先关闭正在运行的 MucageLedger 窗口**：界面和 MCP 各自在内存里维护账本，同时运行会用其中一方覆盖另一方。
 3. 建议先备份 `%APPDATA%\MucageLedger\ledger.json`。
 
@@ -42,6 +42,8 @@ MucageLedger.exe --mcp
 ```
 
 > 说明：MCP 客户端通过管道连接 stdin/stdout 即可正常工作。若你用 PowerShell 手工测试 `| MucageLedger.exe --mcp` 看不到输出，这是 PowerShell 对 GUI 程序的限制，可改用 `Start-Process -RedirectStandardInput/-RedirectStandardOutput` 重定向测试。
+>
+> 服务启动后，Windows 通知区域会出现绿色 **¥** 托盘图标。鼠标悬停可看到 PID 与账本路径；右键菜单可「显示 MCP 状态」或「停止 MCP 服务」。由 Agent 在后台启动的实例同样会显示，不会再无声运行。
 
 ### 方式二：用 Python 包装器（客户端只允许解释器命令时）
 
@@ -99,6 +101,8 @@ MucageLedger.exe --mcp
 | `update_category` | 改分类名称/图标 | `id` `name` `icon` |
 | `delete_category` | 删分类（账目归入「其他」，「其他」不可删） | `id` |
 | `get_stats` | 支出/收入合计、分类占比、每日序列、前 5 大支出 | `month` 或 `start`+`end` |
+| `import_ledger` | 导入另一端的账本文件并合并（源文件不会被修改） | `path` |
+| `export_ledger` | 导出本机账本为同步文件（本机账本不会被修改） | `path`（可选） |
 
 ## 5. 调用示例
 
@@ -110,6 +114,8 @@ MCP 客户端会自动完成握手；手工调试时按行发送 JSON-RPC：
 {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_balance","arguments":{}}}
 {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"add_record","arguments":{"amount":35.5,"type":"支出","category":"吃","note":"午饭"}}}
 {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_stats","arguments":{"month":"2026-11"}}}
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"export_ledger","arguments":{"path":"D:\\sync\\账本.json"}}}
+{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"import_ledger","arguments":{"path":"D:\\sync\\手机账本.json"}}}
 ```
 
 返回值统一为：
@@ -129,6 +135,8 @@ MCP 客户端会自动完成握手；手工调试时按行发送 JSON-RPC：
 - **限额豁免** `limitExempt`：`0` 不豁免、`1` 仅豁免日限额、`2` 全部豁免。
 - **删除**：软删除，账目仍以墓碑保留在同步文件中，导出给手机后另一端也会删除。
 - **余额**：当前余额 = 锚点余额 + 锚点之后的收入 − 支出。`set_balance` 会以今天 0 点为新锚点。
+- **导入**：`import_ledger` 只合并、不改源文件；按 `syncId` 去重、`updatedAt` 较新者胜出。返回 `inserted` / `updated` / `skipped` / `categoriesChanged` / `balanceUpdated` / `localOnly`，其中 `localOnly` 表示本机另有账目不在源文件中。
+- **导出**：`export_ledger` 把本机账本写成同步文件，不改本机账本；省略 `path` 时自动写入 `%APPDATA%\MucageLedger\exports\SanBaiLiang-ledger-*.json`。不能把 `path` 指向本机 `ledger.json`，会被拒绝。
 
 ## 7. `get_stats` 返回结构
 
@@ -155,6 +163,7 @@ MCP 客户端会自动完成握手；手工调试时按行发送 JSON-RPC：
 - **客户端报「stdio command ... is not allowed」**：该客户端只允许解释器命令（AstroBot 等），按「方式二」改用 `python` + `mucage_mcp.py`，或设置 `ASTROBOT_MCP_STDIO_ALLOWED_COMMANDS` 加入 exe。
 - **客户端连上但工具列表为空**：确认配置里传了 `--mcp`（包装器方式无需再传）；可先用 `python`/`node` 等脚本以管道方式启动自测。
 - **PowerShell 管道收不到输出**：属于 PowerShell 对 GUI 程序的限制，改用真实 MCP 客户端或文件重定向。
+- **后台看不到 MCP 服务 / 想结束它**：看 Windows 通知区域的绿色 ¥ 图标，悬停可见 PID，右键可停止；也可以在任务管理器里结束 `MucageLedger.exe`（`--mcp` 参数）。
 - **想同时用界面和 MCP**：目前不支持并发写入，请关闭窗口后再让 Agent 操作。
 - **改了电脑账本，手机怎么同步**：在桌面端「设置 → 导出给手机」导出新文件，再在手机「设置 → 数据同步」导入。
 - **数据安全**：工具拥有与界面相同的写权限；建议在让 Agent 批量操作前备份 `ledger.json`。

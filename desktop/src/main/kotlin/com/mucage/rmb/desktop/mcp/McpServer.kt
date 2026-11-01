@@ -15,10 +15,19 @@ import java.nio.charset.StandardCharsets
  */
 object McpServer {
 
-    const val VERSION = "10.27.1"
+    const val VERSION = "10.27.2"
     private const val PROTOCOL_VERSION = "2024-11-05"
 
     fun run() {
+        val tray = McpTray.install()
+        try {
+            serve()
+        } finally {
+            McpTray.remove(tray)
+        }
+    }
+
+    private fun serve() {
         val reader = BufferedReader(InputStreamReader(System.`in`, StandardCharsets.UTF_8))
         val writer = BufferedWriter(OutputStreamWriter(System.out, StandardCharsets.UTF_8))
         System.err.println("[mucage-ledger-mcp] stdio server ready, version=$VERSION")
@@ -76,7 +85,8 @@ object McpServer {
             ),
             "instructions" to JsonValue.Str(
                 "本地记账软件「此地无银三百两」电脑端账本工具。可查询/设置余额，记账、改账、删账，" +
-                    "管理分类，读取支出统计图表。金额单位一律为元。调用前请先关闭桌面窗口，避免与界面同时写入。"
+                    "管理分类，读取支出统计图表，以及导入/导出账本同步文件。金额单位一律为元。" +
+                    "调用前请先关闭桌面窗口，避免与界面同时写入。"
             )
         )
     )

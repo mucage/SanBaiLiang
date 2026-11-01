@@ -8,6 +8,7 @@ import com.mucage.sync.FixedCategories
 import com.mucage.sync.JsonValue
 import com.mucage.sync.SyncCategory
 import com.mucage.sync.SyncRecord
+import java.io.File
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -36,7 +37,7 @@ internal class McpTool(
 }
 
 /**
- * 桌面端账本 MCP 工具集：余额查询/设置、账目增删改查、分类管理、支出统计。
+ * 桌面端账本 MCP 工具集：余额查询/设置、账目增删改查、分类管理、支出统计、账本导入导出。
  * 全部直接读写本机账本文件（%APPDATA%\MucageLedger\ledger.json），与桌面界面等价。
  */
 internal object McpTools {
@@ -169,6 +170,23 @@ internal object McpTools {
                 )
             ),
             call = { getStats(it) }
+        ),
+        McpTool(
+            name = "import_ledger",
+            description = "导入手机或其他电脑导出的账本文件（mucage-ledger JSON），与本机账本合并：按 syncId 去重、updatedAt 较新者胜出；源文件不会被修改。",
+            schema(
+                required = listOf("path"),
+                props = mapOf("path" to stringProp("要导入的账本文件完整路径，如 D:\\sync\\账本.json"))
+            ),
+            call = { importLedger(it) }
+        ),
+        McpTool(
+            name = "export_ledger",
+            description = "把本机账本导出为同步文件（mucage-ledger JSON），可直接传到手机导入；本机账本不会被修改。省略 path 时写入账本目录的 exports 文件夹。",
+            schema(
+                props = mapOf("path" to stringProp("导出文件完整路径；省略则在 %APPDATA%\\MucageLedger\\exports 下自动命名"))
+            ),
+            call = { exportLedger(it) }
         )
     )
 
@@ -487,6 +505,78 @@ internal object McpTools {
             "topExpenses" to JsonValue.Arr(top)
         )
     }
+
+    // ---------------- 账本导入导出 ----------------
+
+    private fun importLedger(args: JsonValue.Obj): JsonValue {
+        val raw = args.fields["path"]?.str()?.trim().orEmpty()
+        if (raw.isBlank()) throw McpToolException("参数 path 不能为空（要导入的账本文件）")
+        val source = File(raw)
+        if (!source.isFile) throw McpToolException("找不到账本文件：${source.absolutePath}")
+        if (sameFile(source, DesktopLedgerStore.file)) {
+            throw McpToolException("不能导入本机账本自身：${DesktopLedgerStore.file.absolutePath}")
+        }
+        val payload = DesktopLedgerStore.readPayload(source)
+            ?: throw McpToolException("无法解析账本文件，请确认是本应用导出的 JSON：${source.absolutePath}")
+        val current = DesktopLedgerStore.load()
+        val merged = DesktopLedgerStore.merge(current, payload)
+        persist(merged.data)
+        val result = merged.result
+        return jObj(
+            "ok" to JsonValue.Bool(true),
+            "source" to JsonValue.Str(source.absolutePath),
+            "inserted" to JsonValue.Num(result.inserted.toString()),
+            "updated" to JsonValue.Num(result.updated.toString()),
+            "skipped" to JsonValue.Num(result.skipped.toString()),
+            "categoriesChanged" to JsonValue.Num(result.categoriesChanged.toString()),
+            "balanceUpdated" to JsonValue.Bool(result.balanceUpdated),
+            "localOnly" to JsonValue.Num(result.localOnly.toString()),
+            "summary" to JsonValue.Str(result.summary()),
+            "recordCount" to JsonValue.Num(merged.data.records.count { !it.deleted }.toString()),
+            "balance" to amountNode(currentBalance(merged.data) ?: 0L),
+            "hint" to JsonValue.Str(
+                if (result.localOnly > 0) {
+                    "本机另有 ${result.localOnly} 笔不在源文件中，可调用 export_ledger 导出后传回另一端"
+                } else {
+                    "已与源文件合并，源文件保持不变"
+                }
+            )
+        )
+    }
+
+    private fun exportLedger(args: JsonValue.Obj): JsonValue {
+        val data = DesktopLedgerStore.load()
+        val raw = args.fields["path"]?.str()?.trim().orEmpty()
+        val target = if (raw.isBlank()) defaultExportFile() else File(raw)
+        if (target.isDirectory) throw McpToolException("导出路径是文件夹，请给出具体文件名：${target.absolutePath}")
+        if (sameFile(target, DesktopLedgerStore.file)) {
+            throw McpToolException("不能覆盖本机账本文件：${DesktopLedgerStore.file.absolutePath}")
+        }
+        val existed = target.exists()
+        val result = DesktopLedgerStore.exportTo(target, data)
+        result.exceptionOrNull()?.let {
+            throw McpToolException("写入导出文件失败：${it.message ?: it.javaClass.simpleName}")
+        }
+        return jObj(
+            "ok" to JsonValue.Bool(true),
+            "path" to JsonValue.Str(target.absolutePath),
+            "overwritten" to JsonValue.Bool(existed),
+            "bytes" to JsonValue.Num(target.length().toString()),
+            "recordCount" to JsonValue.Num(data.records.count { !it.deleted }.toString()),
+            "tombstones" to JsonValue.Num(data.records.count { it.deleted }.toString()),
+            "balance" to amountNode(currentBalance(data) ?: 0L),
+            "exportedAt" to JsonValue.Str(formatDateTime(System.currentTimeMillis())),
+            "hint" to JsonValue.Str("把该文件传到手机，在手机「设置 → 数据同步 → 从文件导入」即可合并；本机账本未被修改")
+        )
+    }
+
+    private fun defaultExportFile(): File {
+        val stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS"))
+        return File(File(DesktopLedgerStore.file.parentFile, "exports"), "SanBaiLiang-ledger-$stamp.json")
+    }
+
+    private fun sameFile(a: File, b: File): Boolean =
+        runCatching { a.canonicalFile == b.canonicalFile }.getOrDefault(false)
 
     // ---------------- 内部工具 ----------------
 
