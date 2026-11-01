@@ -22,7 +22,7 @@
 
 ## 3. 启动与客户端配置
 
-### 方式一：直接启动 exe（推荐）
+### 方式一：直接启动 exe
 
 ```bash
 MucageLedger.exe --mcp
@@ -42,6 +42,36 @@ MucageLedger.exe --mcp
 ```
 
 > 说明：MCP 客户端通过管道连接 stdin/stdout 即可正常工作。若你用 PowerShell 手工测试 `| MucageLedger.exe --mcp` 看不到输出，这是 PowerShell 对 GUI 程序的限制，可改用 `Start-Process -RedirectStandardInput/-RedirectStandardOutput` 重定向测试。
+
+### 方式二：用 Python 包装器（客户端只允许解释器命令时）
+
+有些客户端（例如 **AstroBot**）出于安全考虑，只允许 `python` / `node` / `bun` / `uv` 等解释器作为 stdio 命令，直接填 exe 会报：
+
+```
+MCP stdio command 'mucaged...' is not allowed.
+Allowed commands: bun, bunx, deno, node, npm, npx, pnpm, py, python, python3, uv, uvx, yarn.
+```
+
+此时改用安装包里自带的 `mucage_mcp.py`（与本目录的 `MucageLedger.exe` 放在一起，已随压缩包附带）：
+
+```json
+{
+  "mcpServers": {
+    "mucage-ledger": {
+      "command": "python",
+      "args": ["C:\\0created-aigc\\ci_di_wu_yin_san_bai_liang\\MucageLedger\\mucage_mcp.py"]
+    }
+  }
+}
+```
+
+包装器只负责把 stdin/stdout 原样转发给同目录的 `MucageLedger.exe --mcp`，不修改任何数据。如果 exe 不在同一目录，可设置环境变量 `MUCAGE_LEDGER_EXE` 指向完整的 exe 路径。
+
+另一种做法是放开客户端白名单（把 exe 加进允许列表）：
+
+```text
+ASTROBOT_MCP_STDIO_ALLOWED_COMMANDS=python,node,MucageLedger.exe
+```
 
 ### 可选：指定其他账本目录
 
@@ -122,7 +152,8 @@ MCP 客户端会自动完成握手；手工调试时按行发送 JSON-RPC：
 
 ## 8. 常见问题
 
-- **客户端连上但工具列表为空**：确认配置里传了 `--mcp`；可先用 `python`/`node` 等脚本以管道方式启动自测。
+- **客户端报「stdio command ... is not allowed」**：该客户端只允许解释器命令（AstroBot 等），按「方式二」改用 `python` + `mucage_mcp.py`，或设置 `ASTROBOT_MCP_STDIO_ALLOWED_COMMANDS` 加入 exe。
+- **客户端连上但工具列表为空**：确认配置里传了 `--mcp`（包装器方式无需再传）；可先用 `python`/`node` 等脚本以管道方式启动自测。
 - **PowerShell 管道收不到输出**：属于 PowerShell 对 GUI 程序的限制，改用真实 MCP 客户端或文件重定向。
 - **想同时用界面和 MCP**：目前不支持并发写入，请关闭窗口后再让 Agent 操作。
 - **改了电脑账本，手机怎么同步**：在桌面端「设置 → 导出给手机」导出新文件，再在手机「设置 → 数据同步」导入。

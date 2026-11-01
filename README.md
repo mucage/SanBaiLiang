@@ -71,6 +71,12 @@ MucageLedger.exe --mcp
 
 可查询余额、设置余额、增删改账目、管理分类、读取支出统计。完整工具参数与客户端配置见 [MCP调用指南](MCP调用指南.md)。使用前请先关闭桌面窗口，避免与界面同时写入账本。
 
+如果客户端只允许 `python` / `node` 等解释器命令（例如 AstroBot），用随包附带的 `mucage_mcp.py` 作为启动器：
+
+```json
+{"mcpServers":{"mucage-ledger":{"command":"python","args":["D:\\MucageLedger\\mucage_mcp.py"]}}}
+```
+
 ## 隐私与数据
 
 - 账目、余额、API Key 均只保存在设备本地，不上传任何服务器
