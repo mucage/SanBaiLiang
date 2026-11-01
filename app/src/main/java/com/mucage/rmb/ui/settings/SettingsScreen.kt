@@ -34,6 +34,7 @@ import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Notifications
+import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -69,6 +70,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.mucage.rmb.R
+import com.mucage.rmb.auto.AutoBookkeepingService
 import com.mucage.rmb.auto.AutoPrefs
 import com.mucage.rmb.auto.NotificationHelper
 import com.mucage.rmb.auto.SmsScanner
@@ -89,14 +91,16 @@ import com.mucage.rmb.util.centsToInput
 import com.mucage.rmb.util.formatCents
 import com.mucage.rmb.util.formatCentsWithSymbol
 import com.mucage.rmb.util.parseAmountToCents
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
-/** 设置页：资金用途（固定分类）展示、自动记账、限额、AI、数据同步与关于 */
+/** 设置页：资金用途（可自定义）、自动记账、限额、AI、数据同步与关于 */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(contentPadding: PaddingValues) {
     val categories by Repository.categoryDao.observeAll().collectAsState(initial = emptyList())
+    var showCategoryManager by remember { mutableStateOf(false) }
 
     Column(
         Modifier
@@ -137,19 +141,19 @@ fun SettingsScreen(contentPadding: PaddingValues) {
             }
         }
 
-        // 资金用途与来源（内置固定分类，不可增删改）
+        // 资金用途与来源（可自定义；编辑入口在独立卡片里，避免误触直接改动）
         SectionTitle("资金用途")
         Text(
-            "支出用途固定为「吃、用、玩、学、出行、其他」六类，收入来源为内置分类",
+            "支出用途与收入来源都可以自定义，改名、换图标、新增或删除会随账本同步到电脑端",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 16.dp)
         )
         val expenseCats = categories.filter { it.type == RecordType.EXPENSE }
         val incomeCats = categories.filter { it.type == RecordType.INCOME }
-        FixedCategoryRow(title = "支出 · 用途", categories = expenseCats)
+        EditableCategoryRow(title = "支出 · 用途", categories = expenseCats, onManage = { showCategoryManager = true })
         Spacer(Modifier.height(8.dp))
-        FixedCategoryRow(title = "收入 · 来源", categories = incomeCats)
+        EditableCategoryRow(title = "收入 · 来源", categories = incomeCats, onManage = { showCategoryManager = true })
 
         Spacer(Modifier.height(16.dp))
 
@@ -188,7 +192,7 @@ fun SettingsScreen(contentPadding: PaddingValues) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Outlined.Info, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text("此地无银三百两 v10.27.0", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Text("此地无银三百两 v10.27.1", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.weight(1f))
                     Image(
                         painter = painterResource(R.drawable.nahida_cheer),
@@ -215,6 +219,10 @@ fun SettingsScreen(contentPadding: PaddingValues) {
         BackgroundSection()
 
         Spacer(Modifier.height(24.dp))
+    }
+
+    if (showCategoryManager) {
+        CategoryManagerDialog(onDismiss = { showCategoryManager = false })
     }
 }
 
@@ -271,17 +279,20 @@ private fun BackgroundSection() {
     }
 }
 
-/** 内置固定分类展示（只读，不可增删改） */
+/** 分类展示（只读）+ 独立的管理入口，避免在设置页误触改动分类 */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun FixedCategoryRow(title: String, categories: List<CategoryEntity>) {
+private fun EditableCategoryRow(title: String, categories: List<CategoryEntity>, onManage: () -> Unit) {
     Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
-        Text(
-            title,
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(bottom = 6.dp)
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                title,
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f).padding(bottom = 6.dp)
+            )
+            TextButton(onClick = onManage) { Text("管理分类") }
+        }
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -321,7 +332,7 @@ private fun SectionTitle(title: String) {
 private fun isNotificationListenerEnabled(context: Context): Boolean =
     NotificationManagerCompat.getEnabledListenerPackages(context).contains(context.packageName)
 
-/** 自动记账：通知监听 + 短信识别开关、授权入口、待确认记录列表 */
+/** 自动记账：通知监听 + 短信识别开关、授权入口、服务状态检查、待确认记录列表 */
 @Composable
 private fun AutoBookkeepingSection() {
     val context = LocalContext.current
@@ -332,10 +343,20 @@ private fun AutoBookkeepingSection() {
     var listenerEnabled by remember { mutableStateOf(isNotificationListenerEnabled(context)) }
     var smsEnabled by remember { mutableStateOf(AutoPrefs.smsEnabled(context)) }
     var confirmTarget by remember { mutableStateOf<AutoPendingEntity?>(null) }
+    var serviceConnected by remember { mutableStateOf(AutoPrefs.isServiceConnected(context)) }
+    var lastNotifAt by remember { mutableStateOf(AutoPrefs.getLastNotifAt(context)) }
 
-    // 从系统设置返回时刷新监听授权状态
+    // 待确认列表的查重结果：id → 疑似重复说明（同类型、同金额、10 分钟内）
+    var duplicateHints by remember { mutableStateOf<Map<Long, List<String>>>(emptyMap()) }
+    LaunchedEffect(pending) {
+        duplicateHints = Repository.duplicateHints(pending)
+    }
+
+    // 从系统设置返回时刷新监听授权与服务状态
     LifecycleResumeEffect(Unit) {
         listenerEnabled = isNotificationListenerEnabled(context)
+        serviceConnected = AutoPrefs.isServiceConnected(context)
+        lastNotifAt = AutoPrefs.getLastNotifAt(context)
         onPauseOrDispose { }
     }
 
@@ -388,7 +409,7 @@ private fun AutoBookkeepingSection() {
                     Column(Modifier.weight(1f)) {
                         Text("自动捕获支付通知", style = MaterialTheme.typography.bodyLarge)
                         Text(
-                            "微信/支付宝/云闪付、招商银行/工商银行等银行App及主流购物平台的通知，确认后入账",
+                            "微信/支付宝/云闪付、工商/建设/农业/中国/交通/邮储等银行App、手机钱包及购物平台的通知，确认后入账",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -420,17 +441,46 @@ private fun AutoBookkeepingSection() {
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
-                            Icons.Outlined.Check,
+                            if (serviceConnected) Icons.Outlined.Check else Icons.Outlined.WarningAmber,
                             null,
-                            tint = MaterialTheme.colorScheme.primary,
+                            tint = if (serviceConnected) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.error,
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(Modifier.width(4.dp))
                         Text(
-                            "通知监听已开启",
-                            color = MaterialTheme.colorScheme.primary,
+                            if (serviceConnected) "监听服务运行中"
+                            else "通知使用权已开，但监听服务未连接（可能被系统清理）",
+                            color = if (serviceConnected) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.error,
                             style = MaterialTheme.typography.bodySmall
                         )
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            if (lastNotifAt > 0) {
+                                "最近收到关注应用的通知：${DateUtils.formatDay(lastNotifAt)} ${DateUtils.formatTime(lastNotifAt)}"
+                            } else {
+                                "尚未收到任何关注应用的通知（可先支付一笔小额试试）"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (!serviceConnected) {
+                            TextButton(onClick = {
+                                AutoBookkeepingService.ensureBound(context)
+                                scope.launch {
+                                    delay(1200)
+                                    serviceConnected = AutoPrefs.isServiceConnected(context)
+                                }
+                            }) { Text("重新绑定") }
+                        } else {
+                            TextButton(onClick = {
+                                serviceConnected = AutoPrefs.isServiceConnected(context)
+                                lastNotifAt = AutoPrefs.getLastNotifAt(context)
+                            }) { Text("刷新状态") }
+                        }
                     }
                 }
 
@@ -472,10 +522,16 @@ private fun AutoBookkeepingSection() {
         }
 
         Spacer(Modifier.height(12.dp))
+        val suspectedCount = duplicateHints.values.count { it.isNotEmpty() }
         Text(
-            "待确认的自动记账（${pending.size}）",
+            if (suspectedCount > 0) {
+                "待确认的自动记账（${pending.size}）· 其中 $suspectedCount 笔疑似重复"
+            } else {
+                "待确认的自动记账（${pending.size}）"
+            },
             style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = if (suspectedCount > 0) MaterialTheme.colorScheme.error
+            else MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 4.dp)
         )
         Spacer(Modifier.height(4.dp))
@@ -490,6 +546,7 @@ private fun AutoBookkeepingSection() {
             pending.forEach { item ->
                 PendingAutoRow(
                     item = item,
+                    hints = duplicateHints[item.id].orEmpty(),
                     onConfirm = { confirmTarget = item },
                     onDiscard = { scope.launch { Repository.discardAutoRecord(item.id) } }
                 )
@@ -502,16 +559,22 @@ private fun AutoBookkeepingSection() {
     }
 }
 
-/** 单条待确认的自动记账 */
+/** 单条待确认的自动记账；疑似重复时用红色标记并列出对比结果 */
 @Composable
-private fun PendingAutoRow(item: AutoPendingEntity, onConfirm: () -> Unit, onDiscard: () -> Unit) {
+private fun PendingAutoRow(
+    item: AutoPendingEntity,
+    hints: List<String>,
+    onConfirm: () -> Unit,
+    onDiscard: () -> Unit
+) {
     val isExpense = item.type == RecordType.EXPENSE
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp),
         shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surface
+        color = if (hints.isEmpty()) MaterialTheme.colorScheme.surface
+        else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f)
     ) {
         Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -547,6 +610,31 @@ private fun PendingAutoRow(item: AutoPendingEntity, onConfirm: () -> Unit, onDis
                         "忽略",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+            if (hints.isNotEmpty()) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+                    Icon(
+                        Icons.Outlined.WarningAmber,
+                        null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        "疑似重复，请检查后再入账",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+                hints.forEach { hint ->
+                    Text(
+                        "· $hint",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 18.dp, top = 2.dp)
                     )
                 }
             }

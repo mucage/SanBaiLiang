@@ -102,7 +102,7 @@ internal fun SyncSection() {
     ) {
         Column(Modifier.padding(16.dp)) {
             Text(
-                "导出 JSON 账本文件 → 在电脑端打开并编辑 → 再导入回手机，即可同步两端的账单与余额",
+                "两端各自维护账本：手机导出 → 电脑「打开并合并」→ 电脑「导出给手机」→ 手机再导入。合并只新增/更新，不会覆盖对方独有的账目；若导入后提示本机有未同步的账目，反向导出一次即可。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

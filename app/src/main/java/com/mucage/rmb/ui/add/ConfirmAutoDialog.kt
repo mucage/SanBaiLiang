@@ -12,11 +12,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -82,6 +84,12 @@ fun ConfirmAutoRecordDialog(pending: AutoPendingEntity, onDismiss: () -> Unit) {
     val canSave = amountCents != null && amountCents > 0 && categoryId != 0L
     val context = androidx.compose.ui.platform.LocalContext.current
 
+    // 查重：账本或另一条待确认里 10 分钟内有同类型、同金额的记录时给出提醒
+    var duplicateHints by remember(pending.id) { mutableStateOf<List<String>>(emptyList()) }
+    LaunchedEffect(pending.id) {
+        duplicateHints = Repository.duplicateHints(listOf(pending))[pending.id].orEmpty()
+    }
+
     fun save() {
         val cents = amountCents ?: return
         scope.launch {
@@ -120,6 +128,41 @@ fun ConfirmAutoRecordDialog(pending: AutoPendingEntity, onDismiss: () -> Unit) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                if (duplicateHints.isNotEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f)
+                    ) {
+                        Column(Modifier.padding(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    Icons.Outlined.WarningAmber,
+                                    null,
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text(
+                                    "疑似重复，请检查后再入账",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            }
+                            duplicateHints.forEach { hint ->
+                                Text(
+                                    "· $hint",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(start = 20.dp, top = 2.dp)
+                                )
+                            }
+                        }
+                    }
+                }
 
                 Spacer(Modifier.height(14.dp))
                 SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {

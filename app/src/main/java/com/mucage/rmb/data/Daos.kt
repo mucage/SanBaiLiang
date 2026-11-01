@@ -43,6 +43,10 @@ interface RecordDao {
     @Query("SELECT * FROM records WHERE deleted = 0 AND date BETWEEN :start AND :end ORDER BY date DESC, id DESC")
     fun observeBetween(start: Long, end: Long): Flow<List<RecordEntity>>
 
+    /** 查询指定时间之后的可见账目（自动记账查重用） */
+    @Query("SELECT * FROM records WHERE deleted = 0 AND date >= :since ORDER BY date ASC")
+    suspend fun getSince(since: Long): List<RecordEntity>
+
     /** 指定类型在时间区间内的金额合计（分） */
     @Query(
         "SELECT COALESCE(SUM(amountCents), 0) FROM records " +
@@ -85,7 +89,7 @@ interface RecordDao {
 
 @Dao
 interface CategoryDao {
-    @Insert
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(category: CategoryEntity): Long
 
     @Update
@@ -94,20 +98,32 @@ interface CategoryDao {
     @Delete
     suspend fun delete(category: CategoryEntity)
 
-    @Query("SELECT * FROM categories ORDER BY type, sortOrder")
+    /** 界面展示的分类（已排除删除墓碑） */
+    @Query("SELECT * FROM categories WHERE deleted = 0 ORDER BY type, sortOrder")
     fun observeAll(): Flow<List<CategoryEntity>>
 
-    @Query("SELECT * FROM categories WHERE type = :type ORDER BY sortOrder")
+    @Query("SELECT * FROM categories WHERE deleted = 0 AND type = :type ORDER BY sortOrder")
     fun observeByType(type: String): Flow<List<CategoryEntity>>
 
-    @Query("SELECT * FROM categories WHERE type = :type ORDER BY sortOrder")
+    @Query("SELECT * FROM categories WHERE deleted = 0 AND type = :type ORDER BY sortOrder")
     suspend fun getByType(type: String): List<CategoryEntity>
 
-    @Query("SELECT COUNT(*) FROM categories")
+    /** 分类全量（含删除墓碑），用于导出同步文件 */
+    @Query("SELECT * FROM categories ORDER BY type, sortOrder")
+    suspend fun getAll(): List<CategoryEntity>
+
+    @Query("SELECT * FROM categories WHERE id = :id LIMIT 1")
+    suspend fun getById(id: Long): CategoryEntity?
+
+    @Query("SELECT COUNT(*) FROM categories WHERE deleted = 0")
     suspend fun countAll(): Int
 
     @Query("SELECT COUNT(*) FROM records WHERE deleted = 0 AND categoryId = :categoryId")
     suspend fun countRecordsByCategory(categoryId: Long): Int
+
+    /** 删除分类前把其下账目迁移到新分类，并刷新修改时间以便跨端同步 */
+    @Query("UPDATE records SET categoryId = :to, updatedAt = :updatedAt WHERE deleted = 0 AND categoryId = :from")
+    suspend fun reassignCategory(from: Long, to: Long, updatedAt: Long)
 }
 
 @Dao
@@ -129,6 +145,10 @@ interface AutoPendingDao {
 
     @Query("SELECT * FROM auto_pending WHERE status = 0 ORDER BY capturedAt DESC")
     fun observePending(): Flow<List<AutoPendingEntity>>
+
+    /** 当前全部待确认记录（自动记账查重用） */
+    @Query("SELECT * FROM auto_pending WHERE status = 0 ORDER BY capturedAt DESC")
+    suspend fun getPending(): List<AutoPendingEntity>
 
     @Query("SELECT COUNT(*) FROM auto_pending WHERE dedupKey = :key AND status = 0")
     suspend fun countByDedupKey(key: String): Int

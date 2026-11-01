@@ -36,8 +36,8 @@ android {
         applicationId = "com.mucage.rmb"
         minSdk = 26
         targetSdk = 35
-        versionCode = 102700
-        versionName = "10.27.0"
+        versionCode = 102701
+        versionName = "10.27.1"
     }
 
     buildTypes {

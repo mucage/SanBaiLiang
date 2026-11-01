@@ -37,8 +37,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mucage.sync.CategoryType
-import com.mucage.sync.FixedCategories
 import com.mucage.sync.SyncBalance
+import com.mucage.sync.SyncCategory
 import com.mucage.sync.SyncRecord
 import java.time.Instant
 import java.time.LocalDate
@@ -62,9 +62,6 @@ internal fun SyncRecord.day(): LocalDate =
 
 internal fun SyncRecord.monthKey(): String = YearMonth.from(day()).toString()
 
-internal fun SyncRecord.categoryName(): String =
-    FixedCategories.all.firstOrNull { it.id == categoryId && it.type.code == type }?.name ?: "其他"
-
 private fun startOfMonth(month: YearMonth): Long =
     month.atDay(1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
 
@@ -76,6 +73,7 @@ private fun monthRange(month: YearMonth): LongRange =
 internal fun StatsPage(
     records: List<SyncRecord>,
     balance: SyncBalance,
+    categories: List<SyncCategory>,
     month: YearMonth,
     onMonthChange: (YearMonth) -> Unit
 ) {
@@ -92,15 +90,24 @@ internal fun StatsPage(
     val activeDays = monthRecords.map { it.day() }.distinct().size
     val largest = expenses.maxByOrNull { it.amountCents }
 
-    val slices = FixedCategories.expense.mapIndexed { index, category ->
-        Triple(category.name, freeColor(index), expenses.filter { it.categoryId == category.id }.sumOf { it.amountCents })
-    }.filter { it.third > 0 }.sortedByDescending { it.third }
+    val slices = DesktopLedgerStore
+        .visibleCategories(categories, CategoryType.EXPENSE.code)
+        .mapIndexed { index, category ->
+            Triple(category.name, freeColor(index), expenses.filter { it.categoryId == category.id }.sumOf { it.amountCents })
+        }.filter { it.third > 0 }.sortedByDescending { it.third }
 
     val previousExpense = records
         .filter { monthRange(month.minusMonths(1)).contains(it.date) && it.type == CategoryType.EXPENSE.code }
         .sumOf { it.amountCents }
-    val commentary = remember(records, month, expenseTotal, incomeTotal, slices) {
-        buildCommentary(month, records, expenseTotal, incomeTotal, previousExpense, activeDays, slices, largest)
+    val commentary = remember(records, categories, month, expenseTotal, incomeTotal, slices) {
+        buildCommentary(
+            month, records, expenseTotal, incomeTotal, previousExpense, activeDays, slices,
+            largest?.let { record ->
+                record.copy(note = record.note.ifBlank {
+                    DesktopLedgerStore.categoryName(categories, record.categoryId, record.type)
+                })
+            }
+        )
     }
 
     val canGoNext = month < YearMonth.from(today)
@@ -413,7 +420,7 @@ private fun buildCommentary(
         lines += "花得最多的是「$name」，共 ¥${formatCents(cents)}，占本月支出的 $share%。"
     }
     largest?.let {
-        val note = it.note.ifBlank { it.categoryName() }
+        val note = it.note.ifBlank { "未填写备注" }
         lines += "最大的一笔是「$note」¥${formatCents(it.amountCents)}，记得确认它是不是必要开销。"
     }
     if (income > 0L) {

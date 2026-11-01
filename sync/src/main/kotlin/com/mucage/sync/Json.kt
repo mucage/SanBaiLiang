@@ -31,6 +31,42 @@ object Json {
         return sb.toString()
     }
 
+    /** 序列化为单行紧凑 JSON（MCP 等按行传输的场景使用） */
+    fun writeCompact(value: JsonValue): String {
+        val sb = StringBuilder(1024)
+        writeCompactValue(value, sb)
+        return sb.toString()
+    }
+
+    private fun writeCompactValue(value: JsonValue, sb: StringBuilder) {
+        when (value) {
+            is JsonValue.Obj -> {
+                sb.append('{')
+                value.fields.entries.forEachIndexed { index, (key, item) ->
+                    if (index > 0) sb.append(',')
+                    writeString(key, sb)
+                    sb.append(':')
+                    writeCompactValue(item, sb)
+                }
+                sb.append('}')
+            }
+
+            is JsonValue.Arr -> {
+                sb.append('[')
+                value.items.forEachIndexed { index, item ->
+                    if (index > 0) sb.append(',')
+                    writeCompactValue(item, sb)
+                }
+                sb.append(']')
+            }
+
+            is JsonValue.Str -> writeString(value.value, sb)
+            is JsonValue.Num -> sb.append(value.raw)
+            is JsonValue.Bool -> sb.append(if (value.value) "true" else "false")
+            JsonValue.Null -> sb.append("null")
+        }
+    }
+
     private fun writeValue(value: JsonValue, sb: StringBuilder, depth: Int) {
         when (value) {
             is JsonValue.Obj -> {

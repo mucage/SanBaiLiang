@@ -47,13 +47,18 @@ object NotificationHelper {
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
             PackageManager.PERMISSION_GRANTED
 
-    /** 有待确认记账时发通知，无则取消已有通知 */
+    /** 有待确认记账时发通知，无则取消已有通知；会提示其中疑似重复的条数 */
     suspend fun refresh(context: Context) {
         val count = Repository.autoPendingDao.countPending()
-        if (count > 0) post(context, count) else cancel(context)
+        if (count > 0) {
+            val suspected = runCatching { Repository.countSuspectedDuplicates() }.getOrDefault(0)
+            post(context, count, suspected)
+        } else {
+            cancel(context)
+        }
     }
 
-    fun post(context: Context, count: Int) {
+    fun post(context: Context, count: Int, suspected: Int = 0) {
         ensureChannel(context)
         if (!canNotify(context)) return
         val intent = Intent(context, MainActivity::class.java)
@@ -63,10 +68,16 @@ object NotificationHelper {
             context, 0, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val text = if (suspected > 0) {
+            "共 $count 笔待确认，其中 $suspected 笔疑似重复，点击检查"
+        } else {
+            "共 $count 笔待确认，点击查看"
+        }
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_pending)
             .setContentTitle("有待确认的记账")
-            .setContentText("共 $count 笔待确认，点击查看")
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setContentIntent(pi)
             .setAutoCancel(true)
             .build()

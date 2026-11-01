@@ -44,6 +44,7 @@ import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.School
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.ShoppingBag
 import androidx.compose.material.icons.outlined.SportsEsports
 import androidx.compose.material.icons.outlined.TrendingUp
@@ -51,6 +52,7 @@ import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material.icons.outlined.Work
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -96,6 +98,7 @@ import com.mucage.sync.CategoryType
 import com.mucage.sync.FixedCategories
 import com.mucage.sync.MergeResult
 import com.mucage.sync.SyncBalance
+import com.mucage.sync.SyncCategory
 import com.mucage.sync.SyncCodec
 import com.mucage.sync.SyncMerge
 import com.mucage.sync.SyncPayload
@@ -138,26 +141,36 @@ private enum class TypeFilter(val label: String) { ALL("全部"), EXPENSE("支�
 private val dateFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
 private val timeFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
 
-/** 支持以命令行参数直接打开账本文件：MucageLedger.exe "此地无银三百两-账本-xxx.json" */
-fun main(args: Array<String>) = application {
-    val initialFile = args.firstOrNull()?.let { path -> runCatching { File(path) }.getOrNull() }
-    val (savedWidth, savedHeight) = DesktopPrefs.loadWindowSize()
-    Window(
-        onCloseRequest = ::exitApplication,
-        title = "此地无银三百两 · 电脑端",
-        state = rememberWindowState(width = savedWidth.dp, height = savedHeight.dp)
-    ) {
-        MaterialTheme(
-            colorScheme = lightColorScheme(
-                primary = NahidaGreen,
-                secondary = Color(0xFF7E9E6A),
-                background = CanvasColor,
-                surface = Color.White
-            )
+/**
+ * 启动入口：
+ * - MucageLedger.exe --mcp            以 MCP stdio 服务方式运行（供 AI Agent 调用，不打开窗口）
+ * - MucageLedger.exe "账本.json"       直接打开并合并指定账本文件
+ */
+fun main(args: Array<String>) {
+    if (args.any { it == "--mcp" }) {
+        com.mucage.rmb.desktop.mcp.McpServer.run()
+        return
+    }
+    application {
+        val initialFile = args.firstOrNull()?.let { path -> runCatching { File(path) }.getOrNull() }
+        val (savedWidth, savedHeight) = DesktopPrefs.loadWindowSize()
+        Window(
+            onCloseRequest = ::exitApplication,
+            title = "此地无银三百两 · 电脑端",
+            state = rememberWindowState(width = savedWidth.dp, height = savedHeight.dp)
         ) {
-            LedgerApp(initialFile = initialFile, owner = window)
+            MaterialTheme(
+                colorScheme = lightColorScheme(
+                    primary = NahidaGreen,
+                    secondary = Color(0xFF7E9E6A),
+                    background = CanvasColor,
+                    surface = Color.White
+                )
+            ) {
+                LedgerApp(initialFile = initialFile, owner = window)
+            }
+            RememberWindowSize(window)
         }
-        RememberWindowSize(window)
     }
 }
 
@@ -187,24 +200,30 @@ private fun RememberWindowSize(window: java.awt.Window) {
     }
 }
 
-/** 主界面：账本文件读写 + 账目管理 + 统计 + 余额同步 */
+/** 主界面：本机账本自动保存 + 账目管理 + 统计 + 分类 + 设置 */
 @Composable
 private fun LedgerApp(initialFile: File?, owner: Frame) {
-    var records by remember { mutableStateOf<List<SyncRecord>>(emptyList()) }
-    var balance by remember { mutableStateOf(SyncBalance(0L, 0L, false, 0L)) }
-    var currentFile by remember { mutableStateOf<File?>(null) }
-    var banner by remember { mutableStateOf("打开或新建一份账本文件，即可与手机互传账目") }
+    val initialLedger = remember { DesktopLedgerStore.load() }
+    var records by remember { mutableStateOf(initialLedger.records) }
+    var balance by remember { mutableStateOf(initialLedger.balance) }
+    var categories by remember { mutableStateOf(initialLedger.categories) }
+    val ledgerFile = DesktopLedgerStore.file
+    var banner by remember { mutableStateOf("账目会自动保存到本机账本，可随时导出给手机") }
     var bannerError by remember { mutableStateOf(false) }
     var tab by remember { mutableStateOf(0) }
     var query by remember { mutableStateOf("") }
     var typeFilter by remember { mutableStateOf(TypeFilter.ALL) }
     var monthFilter by remember { mutableStateOf<String?>(null) }
     var statMonth by remember { mutableStateOf(YearMonth.from(LocalDate.now())) }
-    var undoRecord by remember { mutableStateOf<SyncRecord?>(null) }
+    var undoDeletes by remember { mutableStateOf<List<SyncRecord>?>(null) }
+    var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var editorTarget by remember { mutableStateOf<SyncRecord?>(null) }
     var showRecordEditor by remember { mutableStateOf(false) }
     var showBalanceEditor by remember { mutableStateOf(false) }
-    var showBackgroundEditor by remember { mutableStateOf(false) }
+    var showCategoryManager by remember { mutableStateOf(false) }
+    var lastSavedAt by remember { mutableStateOf<Long?>(null) }
+    /** 导入后若本机存在对方文件没有的账目，在设置页持续提示用户反向导出 */
+    var syncNotice by remember { mutableStateOf<String?>(null) }
 
     // 背景偏好只保存在本机：自定义图片路径 + 背景不透明度 + 板块不透明度
     val savedSettings = remember { DesktopPrefs.load() }
@@ -218,100 +237,103 @@ private fun LedgerApp(initialFile: File?, owner: Frame) {
         DesktopPrefs.save(DesktopPrefs.Settings(bgPath, bgOpacity, cardOpacity))
     }
 
-    LaunchedEffect(banner, undoRecord) {
-        if (banner.isNotEmpty()) {
-            delay(if (undoRecord != null) 15000 else 6000)
-            banner = ""
-            undoRecord = null
-        }
-    }
-
     fun notify(message: String, error: Boolean = false) {
         banner = message
         bannerError = error
     }
 
+    // 本机账本自动保存：账目、余额、分类任一变化后延迟写入，避免频繁写盘
+    LaunchedEffect(records, balance, categories) {
+        delay(700)
+        val result = withContext(Dispatchers.IO) {
+            DesktopLedgerStore.save(LedgerData(records, balance, categories))
+        }
+        result.onSuccess { lastSavedAt = System.currentTimeMillis() }
+            .onFailure { notify("自动保存失败：${it.javaClass.simpleName}: ${it.message ?: "未知错误"}", true) }
+    }
+
+    LaunchedEffect(banner, undoDeletes) {
+        if (banner.isNotEmpty()) {
+            delay(if (undoDeletes != null) 15000 else 6000)
+            banner = ""
+            undoDeletes = null
+        }
+    }
+
     fun mergePayload(payload: SyncPayload): MergeResult {
-        val byId = records.associateBy { it.syncId }.toMutableMap()
-        var inserted = 0
-        var updated = 0
-        var skipped = 0
-        payload.records.forEach { raw ->
-            val incoming = SyncMerge.normalize(raw)
-            val existing = byId[incoming.syncId]
-            when {
-                existing == null -> {
-                    byId[incoming.syncId] = incoming
-                    inserted++
-                }
-                SyncMerge.shouldWrite(incoming, existing.updatedAt) -> {
-                    byId[incoming.syncId] = incoming
-                    updated++
-                }
-                else -> skipped++
-            }
-        }
-        var balanceUpdated = false
-        if (SyncMerge.shouldTakeBalance(payload.balance, balance)) {
-            balance = payload.balance
-            balanceUpdated = true
-        }
-        records = sortRecords(byId.values.toList())
-        return MergeResult(inserted, updated, skipped, balanceUpdated)
+        val merged = DesktopLedgerStore.merge(LedgerData(records, balance, categories), payload)
+        records = merged.data.records
+        balance = merged.data.balance
+        categories = merged.data.categories
+        return merged.result
     }
 
     fun loadFrom(file: File) {
-        val text = runCatching { file.readText() }.getOrNull()
-        if (text == null) {
-            notify("读取失败：${file.name}", true)
-            return
-        }
-        val payload = SyncCodec.decode(text)
+        val payload = DesktopLedgerStore.readPayload(file)
         if (payload == null) {
             notify("「${file.name}」不是本应用导出的账本文件", true)
             return
         }
-        currentFile = file
-        notify("已合并 ${file.name}：${mergePayload(payload).summary()}")
+        val result = mergePayload(payload)
+        syncNotice = if (result.localOnly > 0) {
+            "电脑端有 ${result.localOnly} 笔账目不在「${file.name}」里，已全部保留。记得点「导出给手机」，让手机也同步到这些新记账。"
+        } else {
+            null
+        }
+        notify("已合并 ${file.name}：${result.summary()}（原文件未改动）")
     }
 
     LaunchedEffect(initialFile) {
         initialFile?.let { loadFrom(it) }
     }
 
-    fun saveTo(target: File) {
-        val payload = SyncPayload(System.currentTimeMillis(), records, balance)
-        val text = try {
-            SyncCodec.encode(payload)
-        } catch (t: Throwable) {
-            notify("保存失败：生成账本内容出错（${t.message ?: t.javaClass.simpleName}）", true)
-            return
-        }
-        try {
-            val parent = target.parentFile
-            if (parent != null && !parent.exists()) parent.mkdirs()
-            Files.writeString(
-                target.toPath(),
-                text,
-                Charsets.UTF_8,
-                StandardOpenOption.CREATE,
-                StandardOpenOption.TRUNCATE_EXISTING,
-                StandardOpenOption.WRITE
-            )
-            currentFile = target
-            notify("已保存 ${target.name} · ${records.count { !it.deleted }} 笔账目\n${target.absolutePath}")
-        } catch (t: Throwable) {
-            notify("保存失败：${target.name} — ${t.javaClass.simpleName}: ${t.message ?: "未知错误"}", true)
+    fun saveNow() {
+        val result = DesktopLedgerStore.save(LedgerData(records, balance, categories))
+        if (result.isSuccess) {
+            lastSavedAt = System.currentTimeMillis()
+            notify("已保存到本机账本 · ${records.count { !it.deleted }} 笔账目\n${ledgerFile.absolutePath}")
+        } else {
+            val error = result.exceptionOrNull()
+            notify("保存失败：${error?.javaClass?.simpleName ?: "未知错误"}: ${error?.message ?: ""}", true)
         }
     }
 
-    fun saveFile(saveAs: Boolean) {
-        var target: File? = if (saveAs) null else currentFile
-        if (target == null) {
-            val chosen = chooseSaveFile(owner, SyncCodec.fileName(System.currentTimeMillis())) ?: return
-            target = if (chosen.name.lowercase().endsWith(".json")) chosen else File(chosen.parentFile, chosen.name + ".json")
+    fun exportToPhone() {
+        val chosen = chooseSaveFile(owner, SyncCodec.fileName(System.currentTimeMillis())) ?: return
+        val target = if (chosen.name.lowercase().endsWith(".json")) chosen else File(chosen.parentFile, chosen.name + ".json")
+        val result = DesktopLedgerStore.exportTo(target, LedgerData(records, balance, categories))
+        if (result.isSuccess) {
+            syncNotice = null
+            notify("已导出 ${target.name}（${records.count { !it.deleted }} 笔账目），可在手机「设置 → 数据同步」导入\n${target.absolutePath}")
+        } else {
+            val error = result.exceptionOrNull()
+            notify("导出失败：${error?.javaClass?.simpleName ?: "未知错误"}: ${error?.message ?: ""}", true)
         }
-        target?.let(::saveTo)
+    }
+
+    fun deleteRecords(targets: List<SyncRecord>) {
+        if (targets.isEmpty()) return
+        val now = System.currentTimeMillis()
+        val ids = targets.map { it.syncId }.toSet()
+        records = sortRecords(records.map { if (it.syncId in ids) it.copy(deleted = true, updatedAt = now) else it })
+        undoDeletes = targets
+        selectedIds = emptySet()
+        notify("已删除 ${targets.size} 笔，15 秒内可撤销；导出给手机后会同步删除")
+    }
+
+    fun undoDelete() {
+        val restore = undoDeletes ?: return
+        val now = System.currentTimeMillis()
+        val ids = restore.map { it.syncId }.toSet()
+        records = sortRecords(
+            records.map { if (it.syncId in ids) it.copy(deleted = false, updatedAt = now) else it }
+        )
+        undoDeletes = null
+        notify("已撤销删除")
+    }
+
+    fun toggleSelect(syncId: String) {
+        selectedIds = if (syncId in selectedIds) selectedIds - syncId else selectedIds + syncId
     }
 
     // 删除墓碑只存在于文件与内存中，界面与统计一律只看未删除的账目
@@ -329,25 +351,7 @@ private fun LedgerApp(initialFile: File?, owner: Frame) {
             TypeFilter.INCOME -> record.type == CategoryType.INCOME.code
         }
         val monthOk = monthFilter?.let { record.monthKey() == it } ?: true
-        typeOk && monthOk && record.matchesQuery(query.trim())
-    }
-
-    fun deleteRecord(record: SyncRecord) {
-        val tombstone = record.copy(deleted = true, updatedAt = System.currentTimeMillis())
-        records = sortRecords(records.map { if (it.syncId == record.syncId) tombstone else it })
-        undoRecord = record
-        notify("已删除「${record.note.ifBlank { record.categoryName() }}」，15 秒内可撤销；导出账本后手机导入即可同步删除")
-    }
-
-    fun undoDelete() {
-        val restore = undoRecord ?: return
-        records = sortRecords(
-            records.map {
-                if (it.syncId == restore.syncId) restore.copy(deleted = false, updatedAt = System.currentTimeMillis()) else it
-            }
-        )
-        undoRecord = null
-        notify("已撤销删除")
+        typeOk && monthOk && record.matchesQuery(query.trim(), categories)
     }
 
     CompositionLocalProvider(LocalCardAlpha provides cardOpacity) {
@@ -365,16 +369,10 @@ private fun LedgerApp(initialFile: File?, owner: Frame) {
 
         Column(Modifier.fillMaxSize()) {
             Header(
-                currentFile = currentFile,
+                ledgerFile = ledgerFile,
                 recordCount = visibleRecords.size,
-                onOpen = { chooseOpenFile(owner)?.let(::loadFrom) },
-                onSave = { saveFile(false) },
-                onSaveAs = { saveFile(true) },
-                onAdd = {
-                    editorTarget = null
-                    showRecordEditor = true
-                },
-                onBackground = { showBackgroundEditor = true }
+                lastSavedAt = lastSavedAt,
+                onSave = { saveNow() }
             )
 
             TabStrip(
@@ -392,7 +390,8 @@ private fun LedgerApp(initialFile: File?, owner: Frame) {
                         onEditBalance = { showBalanceEditor = true }
                     )
                     Spacer(Modifier.width(14.dp))
-                    Column(Modifier.weight(1f).fillMaxSize()) {
+                    Box(Modifier.weight(1f).fillMaxSize()) {
+                    Column(Modifier.fillMaxSize()) {
                         FilterBar(
                             query = query,
                             onQuery = { query = it },
@@ -406,6 +405,16 @@ private fun LedgerApp(initialFile: File?, owner: Frame) {
                             income = filtered.filter { it.type == CategoryType.INCOME.code }.sumOf { it.amountCents }
                         )
                         Spacer(Modifier.height(10.dp))
+                        if (selectedIds.isNotEmpty()) {
+                            SelectionBar(
+                                count = selectedIds.size,
+                                allSelected = filtered.isNotEmpty() && selectedIds.size == filtered.size,
+                                onSelectAll = { selectedIds = filtered.map { it.syncId }.toSet() },
+                                onClear = { selectedIds = emptySet() },
+                                onDelete = { deleteRecords(filtered.filter { it.syncId in selectedIds }) }
+                            )
+                            Spacer(Modifier.height(10.dp))
+                        }
                         Surface(
                             modifier = Modifier.fillMaxSize(),
                             shape = RoundedCornerShape(18.dp),
@@ -414,29 +423,73 @@ private fun LedgerApp(initialFile: File?, owner: Frame) {
                             if (filtered.isEmpty()) {
                                 EmptyLedger(hasFilter = query.isNotBlank() || typeFilter != TypeFilter.ALL || monthFilter != null)
                             } else {
-                                LazyColumn(Modifier.fillMaxSize().padding(10.dp)) {
+                                LazyColumn(
+                                    Modifier.fillMaxSize(),
+                                    contentPadding = PaddingValues(start = 10.dp, top = 10.dp, end = 10.dp, bottom = 72.dp)
+                                ) {
                                     items(filtered, key = { it.syncId }) { record ->
+                                        val category = categories.firstOrNull { it.id == record.categoryId && it.type == record.type }
                                         RecordRow(
                                             record = record,
+                                            categoryName = category?.name ?: "其他",
+                                            categoryIcon = category?.icon ?: "more",
+                                            selected = record.syncId in selectedIds,
+                                            onToggleSelect = { toggleSelect(record.syncId) },
                                             onEdit = {
                                                 editorTarget = record
                                                 showRecordEditor = true
                                             },
-                                            onDelete = { deleteRecord(record) }
+                                            onDelete = { deleteRecords(listOf(record)) }
                                         )
                                     }
                                 }
                             }
                         }
                     }
+                    // 固定在列表右下角的记账入口：任何窗口宽度下都可见
+                    Button(
+                        onClick = {
+                            editorTarget = null
+                            showRecordEditor = true
+                        },
+                        modifier = Modifier.align(Alignment.BottomEnd).padding(end = 24.dp, bottom = 24.dp)
+                    ) {
+                        Icon(Icons.Outlined.Add, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(5.dp))
+                        Text("记一笔")
+                    }
+                    }
                 }
-            } else {
+            } else if (tab == 1) {
                 Box(Modifier.fillMaxWidth().weight(1f)) {
                     StatsPage(
                         records = visibleRecords,
                         balance = balance,
+                        categories = categories,
                         month = statMonth,
                         onMonthChange = { statMonth = it }
+                    )
+                }
+            } else {
+                Box(Modifier.fillMaxWidth().weight(1f)) {
+                    DesktopSettingsPage(
+                        ledgerFile = ledgerFile,
+                        recordCount = visibleRecords.size,
+                        syncNotice = syncNotice,
+                        onSaveNow = { saveNow() },
+                        onImport = { chooseOpenFile(owner)?.let(::loadFrom) },
+                        onExport = { exportToPhone() },
+                        categories = categories,
+                        onManageCategories = { showCategoryManager = true },
+                        bgPath = bgPath,
+                        bgOpacity = bgOpacity,
+                        cardOpacity = cardOpacity,
+                        onPickImage = {
+                            chooseImageFile(owner)?.let { bgPath = it.absolutePath }
+                        },
+                        onResetImage = { bgPath = null },
+                        onBgOpacity = { bgOpacity = it },
+                        onCardOpacity = { cardOpacity = it }
                     )
                 }
             }
@@ -460,7 +513,7 @@ private fun LedgerApp(initialFile: File?, owner: Frame) {
                             style = MaterialTheme.typography.bodySmall,
                             color = if (bannerError) Color(0xFF7A2B2B) else Color(0xFF3A4A36)
                         )
-                        if (undoRecord != null) {
+                        if (undoDeletes != null) {
                             TextButton(onClick = ::undoDelete) { Text("撤销删除") }
                         }
                     }
@@ -473,6 +526,7 @@ private fun LedgerApp(initialFile: File?, owner: Frame) {
     if (showRecordEditor) {
         RecordEditorDialog(
             initial = editorTarget,
+            categories = categories,
             onDismiss = { showRecordEditor = false },
             onSave = { saved ->
                 val exists = records.any { it.syncId == saved.syncId }
@@ -490,34 +544,49 @@ private fun LedgerApp(initialFile: File?, owner: Frame) {
             onSave = {
                 balance = it
                 showBalanceEditor = false
-                notify("余额已更新，导出后手机导入即可同步")
+                notify("余额已更新，导出给手机后即可同步")
             }
         )
     }
 
-    if (showBackgroundEditor) {
-        BackgroundDialog(
-            owner = owner,
-            path = bgPath,
-            opacity = bgOpacity,
-            cardOpacity = cardOpacity,
-            onPick = { bgPath = it },
-            onOpacity = { bgOpacity = it },
-            onCardOpacity = { cardOpacity = it },
-            onDismiss = { showBackgroundEditor = false }
+    if (showCategoryManager) {
+        DesktopCategoryManagerDialog(
+            categories = categories,
+            onDismiss = { showCategoryManager = false },
+            onAdd = { name, icon, type ->
+                val next = DesktopLedgerStore.addCategory(categories, name, icon, type)
+                if (next != null) {
+                    categories = next
+                    notify("已新增分类「${name.trim()}」")
+                }
+                next != null
+            },
+            onUpdate = { id, name, icon ->
+                val next = DesktopLedgerStore.updateCategory(categories, id, name, icon)
+                if (next != null) categories = next
+                next != null
+            },
+            onDelete = { id ->
+                val next = DesktopLedgerStore.deleteCategory(LedgerData(records, balance, categories), id)
+                if (next == null) {
+                    false
+                } else {
+                    records = next.first.records
+                    categories = next.first.categories
+                    notify(next.second)
+                    true
+                }
+            }
         )
     }
 }
 
 @Composable
 private fun Header(
-    currentFile: File?,
+    ledgerFile: File,
     recordCount: Int,
-    onOpen: () -> Unit,
-    onSave: () -> Unit,
-    onSaveAs: () -> Unit,
-    onAdd: () -> Unit,
-    onBackground: () -> Unit
+    lastSavedAt: Long?,
+    onSave: () -> Unit
 ) {
     Box(
         Modifier
@@ -538,22 +607,15 @@ private fun Header(
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = (currentFile?.absolutePath ?: "尚未关联账本文件") + " · $recordCount 笔账目",
+                    text = "本机账本：" + ledgerFile.absolutePath + " · $recordCount 笔账目" +
+                        (lastSavedAt?.let { " · 自动保存于 ${formatTimeOfDay(it)}" } ?: ""),
                     color = Color.White.copy(alpha = 0.82f),
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            HeaderButton("打开/合并", Icons.Outlined.FolderOpen, onOpen, filled = true)
-            Spacer(Modifier.width(8.dp))
-            HeaderButton("导出", Icons.Outlined.Save, onSave, filled = true)
-            Spacer(Modifier.width(8.dp))
-            HeaderButton("另存为", null, onSaveAs, filled = false)
-            Spacer(Modifier.width(8.dp))
-            HeaderButton("记一笔", Icons.Outlined.Add, onAdd, filled = true)
-            Spacer(Modifier.width(8.dp))
-            HeaderButton("背景", Icons.Outlined.Image, onBackground, filled = false)
+            HeaderButton("保存", Icons.Outlined.Save, onSave, filled = true)
         }
     }
 }
@@ -599,6 +661,8 @@ private fun TabStrip(tab: Int, onTab: (Int) -> Unit, summary: String) {
             TabPill("明细", Icons.Outlined.ReceiptLong, tab == 0) { onTab(0) }
             Spacer(Modifier.width(6.dp))
             TabPill("统计", Icons.Outlined.PieChart, tab == 1) { onTab(1) }
+            Spacer(Modifier.width(6.dp))
+            TabPill("设置", Icons.Outlined.Settings, tab == 2) { onTab(2) }
             Spacer(Modifier.weight(1f))
             Text(summary, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -732,17 +796,21 @@ private fun FilterBar(
 ) {
     Surface(color = Color.White.copy(alpha = LocalCardAlpha.current), shape = RoundedCornerShape(16.dp)) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = onQuery,
-                    singleLine = true,
-                    textStyle = MaterialTheme.typography.bodySmall,
-                    leadingIcon = { Icon(Icons.Outlined.Search, null, Modifier.size(16.dp)) },
-                    placeholder = { Text("搜索备注、分类、金额或日期", style = MaterialTheme.typography.bodySmall) },
-                    modifier = Modifier.width(280.dp)
-                )
-                Spacer(Modifier.width(12.dp))
+            OutlinedTextField(
+                value = query,
+                onValueChange = onQuery,
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodySmall,
+                leadingIcon = { Icon(Icons.Outlined.Search, null, Modifier.size(16.dp)) },
+                placeholder = { Text("搜索备注、分类、金额或日期", style = MaterialTheme.typography.bodySmall) },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(6.dp))
+            // 筛选单独一行；新增记账按钮固定在列表右下角，窗口再窄也不会被挤掉
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 TypeFilter.entries.forEach { item ->
                     FilterChip(
                         selected = typeFilter == item,
@@ -752,14 +820,14 @@ private fun FilterBar(
                     Spacer(Modifier.width(6.dp))
                 }
                 Spacer(Modifier.weight(1f))
-                Text(
-                    "$count 笔 · 支出 ¥${formatCents(expense)} · 收入 ¥${formatCents(income)}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
             }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "$count 笔 · 支出 ¥${formatCents(expense)} · 收入 ¥${formatCents(income)}",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             if (months.isNotEmpty()) {
-                Spacer(Modifier.height(4.dp))
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     FilterChip(
                         selected = monthFilter == null,
@@ -803,26 +871,73 @@ private fun EmptyLedger(hasFilter: Boolean) {
 }
 
 @Composable
-private fun RecordRow(record: SyncRecord, onEdit: () -> Unit, onDelete: () -> Unit) {
+private fun SelectionBar(
+    count: Int,
+    allSelected: Boolean,
+    onSelectAll: () -> Unit,
+    onClear: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = Color.White.copy(alpha = LocalCardAlpha.current)
+    ) {
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "已选 $count 笔",
+                style = MaterialTheme.typography.labelLarge,
+                color = NahidaDeep,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(Modifier.width(10.dp))
+            TextButton(onClick = onSelectAll) { Text(if (allSelected) "取消全选" else "全选") }
+            TextButton(onClick = onClear) { Text("清除选择") }
+            Spacer(Modifier.weight(1f))
+            Button(
+                onClick = onDelete,
+                colors = ButtonDefaults.buttonColors(containerColor = ExpenseColor, contentColor = Color.White)
+            ) { Text("删除所选") }
+        }
+    }
+}
+
+@Composable
+private fun RecordRow(
+    record: SyncRecord,
+    categoryName: String,
+    categoryIcon: String,
+    selected: Boolean,
+    onToggleSelect: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
     val income = record.type == CategoryType.INCOME.code
-    val category = FixedCategories.all.firstOrNull { it.id == record.categoryId && it.type.code == record.type }
     Surface(
         modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
         shape = RoundedCornerShape(12.dp),
-        color = Color(0xFFFBFCF9).copy(alpha = LocalCardAlpha.current)
+        color = (if (selected) NahidaSoft else Color(0xFFFBFCF9)).copy(alpha = LocalCardAlpha.current)
     ) {
-        Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.padding(start = 4.dp, end = 12.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(
+                checked = selected,
+                onCheckedChange = { onToggleSelect() },
+                modifier = Modifier.size(34.dp)
+            )
             Text(
                 formatStamp(record.date),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.width(132.dp)
+                modifier = Modifier.width(126.dp)
             )
-            Surface(shape = RoundedCornerShape(8.dp), color = NahidaSoft) {
+            Surface(shape = RoundedCornerShape(8.dp), color = Color.White.copy(alpha = 0.6f)) {
                 Row(Modifier.padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(iconFor(category?.icon ?: "more"), null, Modifier.size(14.dp), tint = NahidaGreen)
+                    Icon(desktopCategoryIcon(categoryIcon), null, Modifier.size(14.dp), tint = NahidaGreen)
                     Spacer(Modifier.width(4.dp))
-                    Text(category?.name ?: "其他", style = MaterialTheme.typography.labelMedium)
+                    Text(categoryName, style = MaterialTheme.typography.labelMedium)
                 }
             }
             val exemptText = when (record.limitExempt) {
@@ -861,14 +976,16 @@ private fun RecordRow(record: SyncRecord, onEdit: () -> Unit, onDelete: () -> Un
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun RecordEditorDialog(initial: SyncRecord?, onDismiss: () -> Unit, onSave: (SyncRecord) -> Unit) {
+private fun RecordEditorDialog(
+    initial: SyncRecord?,
+    categories: List<SyncCategory>,
+    onDismiss: () -> Unit,
+    onSave: (SyncRecord) -> Unit
+) {
     var type by remember(initial) { mutableStateOf(initial?.type ?: CategoryType.EXPENSE.code) }
     var amountText by remember(initial) { mutableStateOf(initial?.let { centsToInput(it.amountCents) } ?: "") }
     var categoryId by remember(initial) {
-        mutableStateOf(
-            initial?.categoryId
-                ?: if (type == CategoryType.INCOME.code) FixedCategories.INCOME_OTHER else FixedCategories.EXPENSE_FOOD
-        )
+        mutableStateOf(initial?.categoryId ?: FixedCategories.EXPENSE_FOOD)
     }
     var dateText by remember(initial) { mutableStateOf(formatDate(initial?.date ?: System.currentTimeMillis())) }
     var timeText by remember(initial) {
@@ -876,10 +993,14 @@ private fun RecordEditorDialog(initial: SyncRecord?, onDismiss: () -> Unit, onSa
     }
     var note by remember(initial) { mutableStateOf(initial?.note ?: "") }
 
-    val categories = if (type == CategoryType.INCOME.code) FixedCategories.income else FixedCategories.expense
+    val typeCategories = DesktopLedgerStore.visibleCategories(categories, type)
+    // 编辑老账目时若所选分类已被删除，回落到该类型的第一个可用分类
+    if (categoryId !in typeCategories.map { it.id }) {
+        categoryId = typeCategories.firstOrNull()?.id ?: FixedCategories.otherIdFor(type)
+    }
     val amountCents = parseAmountToCents(amountText)
     val dateMillis = parseDateTime(dateText, timeText)
-    val valid = amountCents != null && dateMillis != null && categories.any { it.id == categoryId }
+    val valid = amountCents != null && dateMillis != null && typeCategories.any { it.id == categoryId }
 
     EditorScrim(onDismiss) {
         Column(Modifier.padding(22.dp)) {
@@ -890,7 +1011,8 @@ private fun RecordEditorDialog(initial: SyncRecord?, onDismiss: () -> Unit, onSa
                     selected = type == CategoryType.EXPENSE.code,
                     onClick = {
                         type = CategoryType.EXPENSE.code
-                        categoryId = FixedCategories.EXPENSE_FOOD
+                        categoryId = DesktopLedgerStore.visibleCategories(categories, type).firstOrNull()?.id
+                            ?: FixedCategories.EXPENSE_OTHER
                     },
                     label = { Text("支出") }
                 )
@@ -898,7 +1020,8 @@ private fun RecordEditorDialog(initial: SyncRecord?, onDismiss: () -> Unit, onSa
                     selected = type == CategoryType.INCOME.code,
                     onClick = {
                         type = CategoryType.INCOME.code
-                        categoryId = FixedCategories.INCOME_SALARY
+                        categoryId = DesktopLedgerStore.visibleCategories(categories, type).firstOrNull()?.id
+                            ?: FixedCategories.INCOME_OTHER
                     },
                     label = { Text("收入") }
                 )
@@ -915,12 +1038,12 @@ private fun RecordEditorDialog(initial: SyncRecord?, onDismiss: () -> Unit, onSa
             Text("用途", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(4.dp))
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                categories.forEach { category ->
+                typeCategories.forEach { category ->
                     FilterChip(
                         selected = categoryId == category.id,
                         onClick = { categoryId = category.id },
                         label = { Text(category.name) },
-                        leadingIcon = { Icon(iconFor(category.icon), null, Modifier.size(15.dp)) }
+                        leadingIcon = { Icon(desktopCategoryIcon(category.icon), null, Modifier.size(15.dp)) }
                     )
                 }
             }
@@ -1043,96 +1166,6 @@ private fun BalanceEditorDialog(current: SyncBalance, onDismiss: () -> Unit, onS
     }
 }
 
-@Composable
-private fun BackgroundDialog(
-    owner: Frame,
-    path: String?,
-    opacity: Float,
-    cardOpacity: Float,
-    onPick: (String?) -> Unit,
-    onOpacity: (Float) -> Unit,
-    onCardOpacity: (Float) -> Unit,
-    onDismiss: () -> Unit
-) {
-    val preview = remember(path) { DesktopImages.background(path) }
-    EditorScrim(onDismiss) {
-        Column(Modifier.padding(22.dp)) {
-            Text("界面背景", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "默认使用内置背景图，也可以换成自己的图片；只保存在这台电脑上。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(Modifier.height(12.dp))
-            Surface(shape = RoundedCornerShape(14.dp), color = CanvasColor) {
-                Box(Modifier.fillMaxWidth().height(180.dp)) {
-                    if (preview != null) {
-                        Image(
-                            bitmap = preview,
-                            contentDescription = null,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(14.dp)).alpha(opacity)
-                        )
-                    }
-                    Box(
-                        Modifier.fillMaxSize().background(Color(0xFFF4F1E9).copy(alpha = 0.25f), RoundedCornerShape(14.dp)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            if (path == null) "内置背景预览" else File(path).name,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color(0xFF6A7166)
-                        )
-                    }
-                }
-            }
-            Spacer(Modifier.height(14.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("背景不透明度", style = MaterialTheme.typography.bodyMedium)
-                Spacer(Modifier.width(12.dp))
-                Slider(
-                    value = opacity,
-                    onValueChange = onOpacity,
-                    valueRange = 0.05f..1f,
-                    modifier = Modifier.weight(1f)
-                )
-                Spacer(Modifier.width(8.dp))
-                Text("${(opacity * 100).roundToInt()}%", style = MaterialTheme.typography.labelMedium, color = NahidaGreen, fontWeight = FontWeight.SemiBold)
-            }
-            Spacer(Modifier.height(6.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("板块不透明度", style = MaterialTheme.typography.bodyMedium)
-                Spacer(Modifier.width(12.dp))
-                Slider(
-                    value = cardOpacity,
-                    onValueChange = onCardOpacity,
-                    valueRange = 0.3f..1f,
-                    modifier = Modifier.weight(1f)
-                )
-                Spacer(Modifier.width(8.dp))
-                Text("${(cardOpacity * 100).roundToInt()}%", style = MaterialTheme.typography.labelMedium, color = NahidaGreen, fontWeight = FontWeight.SemiBold)
-            }
-            Text(
-                "调低后明细列表与统计卡片会更透，背景图会更明显；文字较多时建议保持在 70% 以上。",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = { onPick(null) }) { Text("恢复默认") }
-                Spacer(Modifier.width(6.dp))
-                OutlinedButton(onClick = {
-                    val file = chooseImageFile(owner)
-                    if (file != null) onPick(file.absolutePath)
-                }) { Text("选择图片") }
-                Spacer(Modifier.width(8.dp))
-                Button(onClick = onDismiss) { Text("完成") }
-            }
-        }
-    }
-}
-
 /** 居中弹层：点击遮罩关闭 */
 @Composable
 private fun EditorScrim(onDismiss: () -> Unit, content: @Composable () -> Unit) {
@@ -1176,24 +1209,11 @@ internal fun Sticker(name: String, size: Dp) {
 internal fun sortRecords(list: List<SyncRecord>): List<SyncRecord> =
     list.sortedWith(compareByDescending<SyncRecord> { it.date }.thenByDescending { it.updatedAt })
 
-private fun iconFor(icon: String): ImageVector = when (icon) {
-    "restaurant" -> Icons.Outlined.Restaurant
-    "shopping" -> Icons.Outlined.ShoppingBag
-    "entertainment" -> Icons.Outlined.SportsEsports
-    "education" -> Icons.Outlined.School
-    "transport" -> Icons.Outlined.DirectionsBus
-    "salary" -> Icons.Outlined.Work
-    "bonus" -> Icons.Outlined.EmojiEvents
-    "finance" -> Icons.Outlined.TrendingUp
-    "parttime" -> Icons.Outlined.Schedule
-    "redpacket" -> Icons.Outlined.Redeem
-    else -> Icons.Outlined.MoreHoriz
-}
-
-private fun SyncRecord.matchesQuery(q: String): Boolean {
+private fun SyncRecord.matchesQuery(q: String, categories: List<SyncCategory>): Boolean {
     if (q.isBlank()) return true
+    val categoryName = DesktopLedgerStore.categoryName(categories, categoryId, type)
     return note.contains(q, true) ||
-        categoryName().contains(q, true) ||
+        categoryName.contains(q, true) ||
         formatCents(amountCents).contains(q) ||
         amountCents.toString().contains(q) ||
         formatStamp(date).contains(q) ||

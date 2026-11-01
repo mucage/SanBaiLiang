@@ -12,7 +12,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         RecordEntity::class, CategoryEntity::class,
         AutoPendingEntity::class, BalanceEntity::class
     ],
-    version = 9,
+    version = 10,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -162,6 +162,17 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v9 → v10：分类恢复可自定义，并支持跨端同步。
+         * - 分类新增 updatedAt（最近修改时间）与 deleted（删除墓碑）。
+         */
+        private val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE categories ADD COLUMN updatedAt INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE categories ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun get(context: Context): AppDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -169,7 +180,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "jianzhang.db"
                 )
-                    .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
+                    .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
                     // v6 之前的老库没有迁移路径时全新开始（v6 用户走上面的正式迁移）
                     .fallbackToDestructiveMigration()
                     .addCallback(LedgerCallback)
@@ -178,8 +189,8 @@ abstract class AppDatabase : RoomDatabase() {
             }
 
         /**
-         * 每次打开时确保总余额行与固定分类存在（全新安装 / 升级 / 破坏性迁移统一兜底）。
-         * 分类为内置固定项，不再支持自定义，因此每次打开都以种子数据校正。
+         * 每次打开时确保总余额行存在（全新安装 / 升级 / 破坏性迁移统一兜底）。
+         * 内置分类只在缺失时补种（INSERT OR IGNORE）：用户的改名、图标调整与删除不会被覆盖。
          */
         private object LedgerCallback : Callback() {
             override fun onOpen(db: SupportSQLiteDatabase) {
@@ -190,9 +201,9 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                 (SeedData.expenseCategories + SeedData.incomeCategories).forEach { category ->
                     db.execSQL(
-                        "INSERT OR REPLACE INTO categories (id,name,icon,type,sortOrder) " +
+                        "INSERT OR IGNORE INTO categories (id,name,icon,type,sortOrder,updatedAt,deleted) " +
                             "VALUES (${category.id},'${category.name}','${category.icon}'," +
-                            "'${category.type}',${category.sortOrder})"
+                            "'${category.type}',${category.sortOrder},0,0)"
                     )
                 }
             }

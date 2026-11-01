@@ -51,12 +51,34 @@ class AutoBookkeepingService : NotificationListenerService() {
 
     /** 关注的通知来源（识别逻辑保持不变，账目统一计入总余额） */
     private val watchedPackages = setOf(
+        // 支付平台
         "com.tencent.mm",                          // 微信
         "com.eg.android.AlipayGphone",             // 支付宝
         "com.unionpay",                            // 云闪付
+        "com.ecny.ecnyapp",                        // 数字人民币
+        // 银行手机客户端
         "cmb.pb",                                  // 招商银行
         "com.cmbchina.ccd.pluto.cmbActivity",      // 掌上生活（招商银行信用卡）
         "com.icbc",                                // 工商银行
+        "com.icbc.im",                             // 工银e生活
+        "com.chinamworld.main",                    // 建设银行
+        "com.android.bankabc",                     // 农业银行
+        "com.chinamworld.bocmbci",                 // 中国银行
+        "com.bankcomm.Bankcomm",                   // 交通银行
+        "com.yitong.mbank.psbc",                   // 邮储银行
+        "com.ecitic.bank.mobile",                  // 中信银行
+        "com.cebbank.mobile.cemb",                 // 光大银行
+        "com.cmbc.cc.mbank",                       // 民生银行
+        "com.spdbccc.app",                         // 浦发银行
+        "com.pingan.paces.ccms",                   // 平安口袋银行
+        "com.cib.xyk",                             // 兴业银行
+        // 手机钱包与金融
+        "com.huawei.wallet",                       // 华为钱包
+        "com.mipay.wallet",                        // 小米钱包
+        "com.coloros.wallet",                      // OPPO 钱包
+        "com.vivo.wallet",                         // vivo 钱包
+        "com.jd.jrapp",                            // 京东金融
+        // 购物/生活平台
         "com.taobao.taobao",                       // 淘宝
         "com.alibaba.wireless",                    // 1688
         "com.jingdong.app.mall",                   // 京东
@@ -133,9 +155,27 @@ class AutoBookkeepingService : NotificationListenerService() {
         "com.tencent.mm" -> "微信"
         "com.eg.android.AlipayGphone" -> "支付宝"
         "com.unionpay" -> "云闪付"
+        "com.ecny.ecnyapp" -> "数字人民币"
         "cmb.pb" -> "招商银行"
         "com.cmbchina.ccd.pluto.cmbActivity" -> "掌上生活"
         "com.icbc" -> "工商银行"
+        "com.icbc.im" -> "工银e生活"
+        "com.chinamworld.main" -> "建设银行"
+        "com.android.bankabc" -> "农业银行"
+        "com.chinamworld.bocmbci" -> "中国银行"
+        "com.bankcomm.Bankcomm" -> "交通银行"
+        "com.yitong.mbank.psbc" -> "邮储银行"
+        "com.ecitic.bank.mobile" -> "中信银行"
+        "com.cebbank.mobile.cemb" -> "光大银行"
+        "com.cmbc.cc.mbank" -> "民生银行"
+        "com.spdbccc.app" -> "浦发银行"
+        "com.pingan.paces.ccms" -> "平安银行"
+        "com.cib.xyk" -> "兴业银行"
+        "com.huawei.wallet" -> "华为钱包"
+        "com.mipay.wallet" -> "小米钱包"
+        "com.coloros.wallet" -> "OPPO 钱包"
+        "com.vivo.wallet" -> "vivo 钱包"
+        "com.jd.jrapp" -> "京东金融"
         "com.taobao.taobao" -> "淘宝"
         "com.alibaba.wireless" -> "1688"
         "com.jingdong.app.mall" -> "京东"

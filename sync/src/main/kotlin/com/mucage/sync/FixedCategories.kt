@@ -50,17 +50,36 @@ object FixedCategories {
 
     val all: List<FixedCategory> = expense + income
 
+    /** 内置分类转换为同步模型（内置分类的 updatedAt 为 0，用户修改后才会变新） */
+    val defaultSyncCategories: List<SyncCategory> = all.map { category ->
+        SyncCategory(
+            id = category.id,
+            name = category.name,
+            icon = category.icon,
+            type = category.type.code,
+            sortOrder = category.sortOrder,
+            updatedAt = 0L,
+            deleted = false
+        )
+    }
+
+    /** 新建自定义分类的 id：取毫秒时间戳，避免两端离线各自新增时发生主键冲突 */
+    fun newCategoryId(): Long = System.currentTimeMillis()
+
+    fun otherIdFor(type: String): Long =
+        if (CategoryType.from(type) == CategoryType.INCOME) INCOME_OTHER else EXPENSE_OTHER
+
     val expenseIds: Set<Long> = expense.map { it.id }.toSet()
     val incomeIds: Set<Long> = income.map { it.id }.toSet()
 
     /** 常量引用的 id 集合（用于迁移脚本） */
     val expenseIdList: List<Long> = expense.map { it.id }
 
-    /** 把任意分类 id 归一到合法值：支出归入「其他」，收入归入「其他」 */
+    /** 把任意分类 id 归一到合法值：找不到时归入同类型的「其他」 */
     fun normalizeCategoryId(type: String, categoryId: Long): Long {
         val ids = if (CategoryType.from(type) == CategoryType.INCOME) incomeIds else expenseIds
         if (categoryId in ids) return categoryId
-        return if (CategoryType.from(type) == CategoryType.INCOME) INCOME_OTHER else EXPENSE_OTHER
+        return otherIdFor(type)
     }
 
     fun nameOf(categoryId: Long): String =

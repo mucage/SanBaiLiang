@@ -4,7 +4,7 @@ package com.mucage.sync
 object SyncCodec {
 
     const val FORMAT = "mucage-ledger"
-    const val VERSION = 1
+    const val VERSION = 2
     const val FILE_PREFIX = "此地无银三百两-账本-"
 
     fun encode(payload: SyncPayload): String {
@@ -28,9 +28,11 @@ object SyncCodec {
                 linkedMapOf(
                     "id" to JsonValue.Num(category.id.toString()),
                     "name" to JsonValue.Str(category.name),
-                    "type" to JsonValue.Str(category.type.code),
+                    "type" to JsonValue.Str(category.type),
                     "icon" to JsonValue.Str(category.icon),
-                    "sortOrder" to JsonValue.Num(category.sortOrder.toString())
+                    "sortOrder" to JsonValue.Num(category.sortOrder.toString()),
+                    "updatedAt" to JsonValue.Num(category.updatedAt.toString()),
+                    "deleted" to JsonValue.Bool(category.deleted)
                 )
             )
         })
@@ -87,10 +89,27 @@ object SyncCodec {
             )
         }
 
+        val categories = root.get("categories")?.arr()?.items.orEmpty().mapNotNull { item ->
+            val obj = item.obj() ?: return@mapNotNull null
+            val id = obj.get("id")?.long() ?: return@mapNotNull null
+            SyncCategory(
+                id = id,
+                name = obj.get("name")?.str().orEmpty(),
+                icon = obj.get("icon")?.str().orEmpty().ifBlank { "more" },
+                type = CategoryType.from(obj.get("type")?.str()).code,
+                sortOrder = obj.get("sortOrder")?.int() ?: 0,
+                // 旧版文件没有这两个字段：按「内置分类、未删除」处理
+                updatedAt = obj.get("updatedAt")?.long() ?: 0L,
+                deleted = obj.get("deleted")?.bool() ?: false
+            )
+        }
+
         return SyncPayload(
             exportedAt = root.get("exportedAt")?.long() ?: 0L,
             records = records,
-            balance = balance
+            balance = balance,
+            // 文件未带分类时退回内置分类，保证老文件也能正常导入
+            categories = categories.ifEmpty { FixedCategories.defaultSyncCategories }
         )
     }
 
@@ -135,7 +154,17 @@ object SyncMerge {
         return incoming.updatedAt > local.updatedAt
     }
 
-    /** 规整导入账目的分类：非法分类归入内置「其他」 */
-    fun normalize(record: SyncRecord): SyncRecord =
-        record.copy(categoryId = FixedCategories.normalizeCategoryId(record.type, record.categoryId))
+    /** 判断分类是否需要写入（本地不存在，或文件版本更新；名称为空视为无效） */
+    fun shouldWriteCategory(incoming: SyncCategory, localUpdatedAt: Long?): Boolean {
+        if (incoming.name.isBlank()) return false
+        if (localUpdatedAt == null) return true
+        return incoming.updatedAt > localUpdatedAt
+    }
+
+    /** 规整导入账目的分类：不在本地有效分类内时归入同类型的「其他」 */
+    fun normalize(record: SyncRecord, validExpenseIds: Set<Long>, validIncomeIds: Set<Long>): SyncRecord {
+        val valid = if (CategoryType.from(record.type) == CategoryType.INCOME) validIncomeIds else validExpenseIds
+        val fallback = FixedCategories.otherIdFor(record.type)
+        return record.copy(categoryId = if (record.categoryId in valid) record.categoryId else fallback)
+    }
 }

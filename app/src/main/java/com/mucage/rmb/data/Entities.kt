@@ -25,14 +25,20 @@ data class BalanceEntity(
     val updatedAt: Long = 0           // 最近修改时间，用于两端同步时判断新旧
 )
 
-/** 资金用途分类 */
+/** 资金用途分类（内置分类 + 用户自建分类） */
 @Entity(tableName = "categories")
 data class CategoryEntity(
     @PrimaryKey val id: Long,
     val name: String,
     val icon: String,          // 图标标识，见 CategoryIcons 映射
     val type: String,          // EXPENSE / INCOME
-    val sortOrder: Int
+    val sortOrder: Int,
+    /** 最近修改时间：跨端合并时较新的分类定义胜出 */
+    @ColumnInfo(defaultValue = "0")
+    val updatedAt: Long = 0,
+    /** 删除墓碑：界面不展示，但随同步文件导出，避免另一端把已删除分类重新种回来 */
+    @ColumnInfo(defaultValue = "0")
+    val deleted: Boolean = false
 )
 
 /** 一笔账目记录：只对总余额加减，不记来源与支付方式 */
