@@ -133,7 +133,7 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL(
                     "UPDATE records SET categoryId = ${SeedData.EXPENSE_OTHER} " +
                         "WHERE type = 'EXPENSE' AND categoryId NOT IN " +
-                        "(${SeedData.expenseCategoryIds.joinToString(",")})"
+                        "(${SeedData.expenseCategories.joinToString(",") { it.id.toString() }})"
                 )
 
                 // 2) 分类表重写为固定分类
