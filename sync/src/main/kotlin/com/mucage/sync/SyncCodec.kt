@@ -4,7 +4,7 @@ package com.mucage.sync
 object SyncCodec {
 
     const val FORMAT = "mucage-ledger"
-    const val VERSION = 2
+    const val VERSION = 3
     const val FILE_PREFIX = "此地无银三百两-账本-"
 
     fun encode(payload: SyncPayload): String {
@@ -19,7 +19,8 @@ object SyncCodec {
                     "date" to JsonValue.Num(record.date.toString()),
                     "limitExempt" to JsonValue.Num(record.limitExempt.toString()),
                     "updatedAt" to JsonValue.Num(record.updatedAt.toString()),
-                    "deleted" to JsonValue.Bool(record.deleted)
+                    "deleted" to JsonValue.Bool(record.deleted),
+                    "savingsTransfer" to JsonValue.Bool(record.savingsTransfer)
                 )
             )
         })
@@ -46,7 +47,13 @@ object SyncCodec {
                         "balanceCents" to JsonValue.Num(payload.balance.balanceCents.toString()),
                         "anchoredAt" to JsonValue.Num(payload.balance.anchoredAt.toString()),
                         "initialized" to JsonValue.Bool(payload.balance.initialized),
-                        "updatedAt" to JsonValue.Num(payload.balance.updatedAt.toString())
+                        "updatedAt" to JsonValue.Num(payload.balance.updatedAt.toString()),
+                        "savedCents" to JsonValue.Num(payload.balance.savedCents.toString()),
+                        "autoSaveEnabled" to JsonValue.Bool(payload.balance.autoSaveEnabled),
+                        "autoSavePeriod" to JsonValue.Str(payload.balance.autoSavePeriod),
+                        "autoSaveAmountCents" to JsonValue.Num(payload.balance.autoSaveAmountCents.toString()),
+                        "autoSaveCountAsExpense" to JsonValue.Bool(payload.balance.autoSaveCountAsExpense),
+                        "autoSaveLastAt" to JsonValue.Num(payload.balance.autoSaveLastAt.toString())
                     )
                 ),
                 "categories" to categories,
@@ -67,7 +74,14 @@ object SyncCodec {
             balanceCents = balanceObj?.get("balanceCents")?.long() ?: 0L,
             anchoredAt = balanceObj?.get("anchoredAt")?.long() ?: 0L,
             initialized = balanceObj?.get("initialized")?.bool() ?: false,
-            updatedAt = balanceObj?.get("updatedAt")?.long() ?: 0L
+            updatedAt = balanceObj?.get("updatedAt")?.long() ?: 0L,
+            // 旧版文件没有这些字段：按「没有攒着、未开启自动攒着」处理
+            savedCents = balanceObj?.get("savedCents")?.long() ?: 0L,
+            autoSaveEnabled = balanceObj?.get("autoSaveEnabled")?.bool() ?: false,
+            autoSavePeriod = AutoSavePeriod.from(balanceObj?.get("autoSavePeriod")?.str()).code,
+            autoSaveAmountCents = balanceObj?.get("autoSaveAmountCents")?.long() ?: 0L,
+            autoSaveCountAsExpense = balanceObj?.get("autoSaveCountAsExpense")?.bool() ?: false,
+            autoSaveLastAt = balanceObj?.get("autoSaveLastAt")?.long() ?: 0L
         )
 
         val records = root.get("records")?.arr()?.items.orEmpty().mapNotNull { item ->
@@ -84,8 +98,9 @@ object SyncCodec {
                 date = obj.get("date")?.long() ?: 0L,
                 limitExempt = obj.get("limitExempt")?.int() ?: 0,
                 updatedAt = obj.get("updatedAt")?.long() ?: 0L,
-                // 旧版文件没有 deleted 字段，默认 false
-                deleted = obj.get("deleted")?.bool() ?: false
+                // 旧版文件没有 deleted / savingsTransfer 字段，默认 false
+                deleted = obj.get("deleted")?.bool() ?: false,
+                savingsTransfer = obj.get("savingsTransfer")?.bool() ?: false
             )
         }
 
@@ -163,7 +178,12 @@ object SyncMerge {
 
     /** 规整导入账目的分类：不在本地有效分类内时归入同类型的「其他」 */
     fun normalize(record: SyncRecord, validExpenseIds: Set<Long>, validIncomeIds: Set<Long>): SyncRecord {
-        val valid = if (CategoryType.from(record.type) == CategoryType.INCOME) validIncomeIds else validExpenseIds
+        // 攒着是系统分类，始终允许引用（旧文件/旧客户端的有效分类集合里可能没有它）
+        val valid = if (CategoryType.from(record.type) == CategoryType.INCOME) {
+            validIncomeIds
+        } else {
+            validExpenseIds + FixedCategories.EXPENSE_SAVINGS
+        }
         val fallback = FixedCategories.otherIdFor(record.type)
         return record.copy(categoryId = if (record.categoryId in valid) record.categoryId else fallback)
     }

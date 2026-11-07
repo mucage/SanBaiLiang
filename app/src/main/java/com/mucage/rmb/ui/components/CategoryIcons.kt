@@ -17,6 +17,7 @@ import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material.icons.outlined.Pets
 import androidx.compose.material.icons.outlined.Redeem
 import androidx.compose.material.icons.outlined.Restaurant
+import androidx.compose.material.icons.outlined.Savings
 import androidx.compose.material.icons.outlined.School
 import androidx.compose.material.icons.outlined.ShoppingCart
 import androidx.compose.material.icons.outlined.Smartphone
@@ -47,6 +48,7 @@ fun categoryIcon(icon: String): ImageVector = when (icon) {
     "finance" -> Icons.Outlined.TrendingUp
     "parttime" -> Icons.Outlined.Luggage
     "redpacket" -> Icons.Outlined.Redeem
+    "savings" -> Icons.Outlined.Savings
     else -> Icons.Outlined.Category
 }
 

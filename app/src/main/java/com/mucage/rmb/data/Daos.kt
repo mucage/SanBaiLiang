@@ -72,17 +72,20 @@ interface RecordDao {
     @Query("UPDATE records SET limitExempt = :exempt, updatedAt = :updatedAt WHERE id IN (:ids) AND deleted = 0")
     suspend fun setLimitExempt(ids: List<Long>, exempt: Int, updatedAt: Long)
 
-    /** 指定时间之后的净收支（收入-支出，分）：用于总余额计算 */
+    /**
+     * 指定时间之后的净收支（收入-支出，分）：用于总余额计算。
+     * 账面「攒着」划转不改总余额，因此排除 savingsTransfer。
+     */
     @Query(
         "SELECT COALESCE(SUM(CASE WHEN type = 'INCOME' THEN amountCents ELSE -amountCents END), 0) " +
-            "FROM records WHERE deleted = 0 AND date >= :since"
+            "FROM records WHERE deleted = 0 AND savingsTransfer = 0 AND date >= :since"
     )
     suspend fun netFlowSince(since: Long): Long
 
     /** 指定时间之后的净收支（收入-支出，分）：Flow 版，余额随账目变动自动刷新 */
     @Query(
         "SELECT COALESCE(SUM(CASE WHEN type = 'INCOME' THEN amountCents ELSE -amountCents END), 0) " +
-            "FROM records WHERE deleted = 0 AND date >= :since"
+            "FROM records WHERE deleted = 0 AND savingsTransfer = 0 AND date >= :since"
     )
     fun observeNetFlowSince(since: Long): Flow<Long>
 }

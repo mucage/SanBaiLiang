@@ -1,5 +1,6 @@
 package com.mucage.rmb.ui.assets
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -9,17 +10,24 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Savings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -34,6 +42,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -47,13 +56,22 @@ import com.mucage.rmb.util.formatCents
 import com.mucage.rmb.util.formatCentsWithSymbol
 import com.mucage.rmb.util.parseAmountToCents
 import com.mucage.rmb.util.todayStartMillis
+import com.mucage.sync.AutoSavePeriod
+import com.mucage.sync.SavingsAuto
+import com.mucage.sync.SavingsMath
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** 资产页：总资产（锚点余额 + 锚点后净收支）与本月收支，支持手动重设余额 */
+/** 资产页的两个小板块 */
+private enum class BalanceBucket { SAVED, AVAILABLE }
+
+/**
+ * 资产页：总余额（大板块）+ 攒着 / 可用（小板块）。
+ * 攒着只是账面预留，不涉及真实资金搬移；两者都可手动调整，总余额保持不变。
+ */
 @Composable
 fun AssetsScreen(contentPadding: PaddingValues) {
     val scope = rememberCoroutineScope()
@@ -65,9 +83,13 @@ fun AssetsScreen(contentPadding: PaddingValues) {
     }.collectAsState(initial = 0L)
 
     val b = balance
-    val current = if (b != null && b.initialized) b.balanceCents + netFlow else 0L
+    val initialized = b != null && b.initialized
+    val total = if (initialized) b.balanceCents + netFlow else 0L
+    val saved = b?.let { SavingsMath.clampSaved(it.savedCents, total) } ?: 0L
+    val available = total - saved
 
     var showReset by remember { mutableStateOf(false) }
+    var editBucket by remember { mutableStateOf<BalanceBucket?>(null) }
 
     Column(
         Modifier
@@ -75,7 +97,7 @@ fun AssetsScreen(contentPadding: PaddingValues) {
             .padding(contentPadding)
             .verticalScroll(rememberScrollState())
     ) {
-        // 总资产卡片
+        // 大板块：总余额
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
@@ -83,21 +105,73 @@ fun AssetsScreen(contentPadding: PaddingValues) {
             shape = RoundedCornerShape(24.dp),
             color = MaterialTheme.colorScheme.primary
         ) {
-            Column(Modifier.padding(horizontal = 24.dp, vertical = 28.dp)) {
+            Column(Modifier.padding(horizontal = 24.dp, vertical = 26.dp)) {
                 Text(
-                    "总资产",
+                    "总余额",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onPrimary
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    formatCentsWithSymbol(current),
+                    formatCentsWithSymbol(total),
                     style = MaterialTheme.typography.displayMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onPrimary
                 )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "总余额 = 攒着 + 可用 · 两者只是账面划分，不涉及真实资金搬动",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.86f)
+                )
             }
         }
+
+        // 小板块：攒着 / 可用
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            BucketCard(
+                title = "攒着",
+                amountCents = saved,
+                hint = "点击调整",
+                accent = MaterialTheme.colorScheme.primary,
+                container = MaterialTheme.colorScheme.primaryContainer,
+                icon = true,
+                modifier = Modifier.weight(1f),
+                onClick = { editBucket = BalanceBucket.SAVED }
+            )
+            BucketCard(
+                title = "可用",
+                amountCents = available,
+                hint = "点击调整",
+                accent = MaterialTheme.colorScheme.onSurface,
+                container = MaterialTheme.colorScheme.surfaceVariant,
+                icon = false,
+                modifier = Modifier.weight(1f),
+                onClick = { editBucket = BalanceBucket.AVAILABLE }
+            )
+        }
+
+        Spacer(Modifier.height(16.dp))
+        AutoSavingsCard(
+            enabled = b?.autoSaveEnabled ?: false,
+            periodCode = b?.autoSavePeriod ?: AutoSavePeriod.MONTHLY.code,
+            amountCents = b?.autoSaveAmountCents ?: 0L,
+            countAsExpense = b?.autoSaveCountAsExpense ?: false,
+            lastAt = b?.autoSaveLastAt ?: 0L,
+            onEnabled = { value -> scope.launch { Repository.updateAutoSavings(enabled = value) } },
+            onPeriod = { code -> scope.launch { Repository.updateAutoSavings(period = code) } },
+            onAmount = { cents -> scope.launch { Repository.updateAutoSavings(amountCents = cents) } },
+            onCountAsExpense = { value ->
+                scope.launch { Repository.updateAutoSavings(countAsExpense = value) }
+            }
+        )
+
+        Spacer(Modifier.height(16.dp))
 
         // 余额构成
         Surface(
@@ -136,9 +210,23 @@ fun AssetsScreen(contentPadding: PaddingValues) {
                         color = if (netFlow >= 0) IncomeColor else ExpenseColor
                     )
                 }
+                Spacer(Modifier.height(6.dp))
+                Row(Modifier.fillMaxWidth()) {
+                    Text(
+                        "攒着 + 可用",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        "${formatCents(saved)} + ${formatCents(available)}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
                 Spacer(Modifier.height(10.dp))
                 Text(
-                    "所有账目均计入总余额；每月 1 日打开时会提示核对一次。",
+                    "所有账目都会影响总余额；自动攒着生成的「攒着」记录只是账面搬移，不会重复扣减总余额。每月 1 日打开时会提示核对一次。",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -147,7 +235,6 @@ fun AssetsScreen(contentPadding: PaddingValues) {
 
         Spacer(Modifier.height(16.dp))
 
-        // 本月收支
         MonthFlowCard()
 
         Spacer(Modifier.height(16.dp))
@@ -163,15 +250,216 @@ fun AssetsScreen(contentPadding: PaddingValues) {
         Spacer(Modifier.height(24.dp))
     }
 
-    if (showReset && b != null && b.initialized) {
+    if (showReset && initialized) {
         SetTotalBalanceDialog(
-            currentCents = current,
+            currentCents = total,
             onDismiss = { showReset = false },
             onConfirm = { cents ->
                 scope.launch { Repository.setTotalBalance(cents) }
                 showReset = false
             }
         )
+    }
+
+    if (editBucket != null && initialized) {
+        val isSaved = editBucket == BalanceBucket.SAVED
+        SetBucketBalanceDialog(
+            title = if (isSaved) "调整攒着" else "调整可用",
+            hint = if (isSaved) {
+                "总余额 ${formatCentsWithSymbol(total)} 不变，只改变账面划分。当前攒着："
+            } else {
+                "总余额 ${formatCentsWithSymbol(total)} 不变，只改变账面划分。当前可用："
+            },
+            currentCents = if (isSaved) saved else available,
+            onDismiss = { editBucket = null },
+            onConfirm = { cents ->
+                scope.launch {
+                    if (isSaved) Repository.setSavedBalance(cents)
+                    else Repository.setAvailableBalance(cents)
+                }
+                editBucket = null
+            }
+        )
+    }
+}
+
+/** 攒着 / 可用的小板块卡片 */
+@Composable
+private fun BucketCard(
+    title: String,
+    amountCents: Long,
+    hint: String,
+    accent: Color,
+    container: Color,
+    icon: Boolean,
+    modifier: Modifier,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = modifier.clickable(onClick = onClick),
+        shape = RoundedCornerShape(18.dp),
+        color = container
+    ) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (icon) {
+                    Icon(
+                        Icons.Outlined.Savings,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = accent
+                    )
+                    Spacer(Modifier.width(5.dp))
+                }
+                Text(title, style = MaterialTheme.typography.labelMedium)
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                formatCentsWithSymbol(amountCents),
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = accent
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                hint,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/** 自动攒着设置卡片 */
+@Composable
+private fun AutoSavingsCard(
+    enabled: Boolean,
+    periodCode: String,
+    amountCents: Long,
+    countAsExpense: Boolean,
+    lastAt: Long,
+    onEnabled: (Boolean) -> Unit,
+    onPeriod: (String) -> Unit,
+    onAmount: (Long) -> Unit,
+    onCountAsExpense: (Boolean) -> Unit
+) {
+    val period = AutoSavePeriod.from(periodCode)
+    var amountText by remember { mutableStateOf(centsToInput(amountCents)) }
+    LaunchedEffect(amountCents) { amountText = centsToInput(amountCents) }
+    val parsedAmount = parseAmountToCents(amountText)
+    val nextAt = remember(enabled, periodCode, lastAt) {
+        if (!enabled) {
+            null
+        } else {
+            val now = System.currentTimeMillis()
+            val anchor = if (lastAt in 1..now) lastAt else SavingsAuto.periodStart(period, now)
+            SavingsAuto.nextBoundary(period, anchor)
+        }
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp),
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surface
+    ) {
+        Column(Modifier.padding(horizontal = 18.dp, vertical = 16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "自动攒着",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        "按周 / 月 / 年把「可用」的一部分转为「攒着」，可用不足时跳过该期",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(checked = enabled, onCheckedChange = onEnabled)
+            }
+
+            if (enabled) {
+                Spacer(Modifier.height(14.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Spacer(Modifier.height(12.dp))
+
+                Text(
+                    "结算周期",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AutoSavePeriod.entries.forEach { item ->
+                        FilterChip(
+                            selected = period == item,
+                            onClick = { onPeriod(item.code) },
+                            label = { Text(item.label) }
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = amountText,
+                        onValueChange = { new ->
+                            val filtered = new.filter { it.isDigit() || it == '.' }
+                            val parts = filtered.split(".")
+                            amountText = if (parts.size > 1) {
+                                parts[0] + "." + parts[1].take(2)
+                            } else {
+                                filtered
+                            }
+                        },
+                        label = { Text("每期转入（元）") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Button(
+                        onClick = { parsedAmount?.let(onAmount) },
+                        enabled = parsedAmount != null
+                    ) {
+                        Text("保存")
+                    }
+                }
+
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("视作支出", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "开启后会生成一笔「攒着」支出，计入日 / 月限额与统计；关闭则只做账面划分",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Switch(checked = countAsExpense, onCheckedChange = onCountAsExpense)
+                }
+
+                if (nextAt != null) {
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "上次结算：" + (if (lastAt > 0) DateUtils.formatFullDate(lastAt) else "尚未开始") +
+                            " · 下次结算：" + DateUtils.formatFullDate(nextAt),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "两端都会按同步的结算时间自动执行；逐期补足，可用不足的那一期直接跳过。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
     }
 }
 
@@ -200,7 +488,7 @@ private fun MonthFlowCard() {
 }
 
 @Composable
-private fun FlowCell(name: String, cents: Long, color: androidx.compose.ui.graphics.Color, modifier: Modifier = Modifier) {
+private fun FlowCell(name: String, cents: Long, color: Color, modifier: Modifier = Modifier) {
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
         Text(name, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
         Spacer(Modifier.height(6.dp))
@@ -242,7 +530,7 @@ fun InitialBalanceScreen(onDone: () -> Unit) {
         Spacer(Modifier.height(10.dp))
         Text(
             "请输入各账户的当前余额，每个余额一行（如微信钱包、支付宝、银行卡等），" +
-                "确认后合计将作为初始总余额，之后所有账目只对总余额加减。",
+                "确认后合计将作为初始总余额，之后所有账目只对总余额加减。攒着与可用可在资产页随时调整。",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -376,6 +664,12 @@ fun SetTotalBalanceDialog(
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     modifier = Modifier.fillMaxWidth()
                 )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "保存后会保留当前攒着，并自动夹到新的总余额范围内。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         },
         confirmButton = {
@@ -385,6 +679,60 @@ fun SetTotalBalanceDialog(
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text(dismissText) }
+        }
+    )
+}
+
+/** 调整攒着 / 可用的对话框：只改账面划分，总余额不变 */
+@Composable
+private fun SetBucketBalanceDialog(
+    title: String,
+    hint: String,
+    currentCents: Long,
+    onDismiss: () -> Unit,
+    onConfirm: (Long) -> Unit
+) {
+    var text by rememberSaveable { mutableStateOf(centsToInput(currentCents)) }
+    val cents = parseAmountToCents(text)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column {
+                Text(
+                    "$hint${formatCentsWithSymbol(currentCents)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { new ->
+                        val filtered = new.filter { it.isDigit() || it == '.' }
+                        val parts = filtered.split(".")
+                        text = if (parts.size > 1) parts[0] + "." + parts[1].take(2) else filtered
+                    },
+                    label = { Text("金额（元）") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "金额会自动限制在 0 到总余额之间；保存后另一端同步即可看到。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = { cents?.let(onConfirm) }, enabled = cents != null) {
+                Text("保存")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
         }
     )
 }

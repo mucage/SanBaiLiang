@@ -12,7 +12,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         RecordEntity::class, CategoryEntity::class,
         AutoPendingEntity::class, BalanceEntity::class
     ],
-    version = 10,
+    version = 11,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -173,6 +173,23 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v10 → v11：余额拆分为「总余额 / 攒着 / 可用」，并支持自动攒着。
+         * - 账目新增 savingsTransfer：账面搬移记录，不计入总余额；
+         * - 余额新增攒着金额、自动攒着开关/周期/每期金额/是否视作支出/上次结算时间。
+         */
+        private val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE records ADD COLUMN savingsTransfer INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE balance ADD COLUMN savedCents INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE balance ADD COLUMN autoSaveEnabled INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE balance ADD COLUMN autoSavePeriod TEXT NOT NULL DEFAULT 'MONTHLY'")
+                db.execSQL("ALTER TABLE balance ADD COLUMN autoSaveAmountCents INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE balance ADD COLUMN autoSaveCountAsExpense INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE balance ADD COLUMN autoSaveLastAt INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun get(context: Context): AppDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -180,7 +197,9 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "jianzhang.db"
                 )
-                    .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
+                    .addMigrations(
+                        MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11
+                    )
                     // v6 之前的老库没有迁移路径时全新开始（v6 用户走上面的正式迁移）
                     .fallbackToDestructiveMigration()
                     .addCallback(LedgerCallback)
@@ -199,7 +218,7 @@ abstract class AppDatabase : RoomDatabase() {
                     "INSERT OR IGNORE INTO `balance` (`id`,`balanceCents`,`anchoredAt`,`initialized`,`updatedAt`) " +
                         "VALUES (1, 0, 0, 0, 0)"
                 )
-                (SeedData.expenseCategories + SeedData.incomeCategories).forEach { category ->
+                SeedData.allCategories.forEach { category ->
                     db.execSQL(
                         "INSERT OR IGNORE INTO categories (id,name,icon,type,sortOrder,updatedAt,deleted) " +
                             "VALUES (${category.id},'${category.name}','${category.icon}'," +

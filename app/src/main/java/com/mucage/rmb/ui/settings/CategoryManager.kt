@@ -115,7 +115,10 @@ internal fun CategoryManagerDialog(onDismiss: () -> Unit) {
                 }
                 Spacer(Modifier.height(10.dp))
                 LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    val list = categories.filter { it.type == type }
+                    // 「攒着」是系统分类，不出现在分类管理里，避免被改名或删除
+                    val list = categories.filter {
+                        it.type == type && it.id != FixedCategories.EXPENSE_SAVINGS
+                    }
                     items(list, key = { it.id }) { category ->
                         CategoryManageRow(
                             category = category,

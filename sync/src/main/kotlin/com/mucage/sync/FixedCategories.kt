@@ -23,6 +23,9 @@ object FixedCategories {
     const val EXPENSE_TRAVEL = 105L
     const val EXPENSE_OTHER = 116L
 
+    /** 系统分类「攒着」：只用于自动/手动攒着的账面划转记录，不出现在手动记账的分类选择里 */
+    const val EXPENSE_SAVINGS = 200L
+
     const val INCOME_SALARY = 201L
     const val INCOME_BONUS = 202L
     const val INCOME_FINANCE = 203L
@@ -48,7 +51,11 @@ object FixedCategories {
         FixedCategory(INCOME_OTHER, "其他", "more", CategoryType.INCOME, 5),
     )
 
-    val all: List<FixedCategory> = expense + income
+    /** 账面攒着的系统分类（跟随账本同步，但不允许手动选作普通支出用途） */
+    val savings: FixedCategory =
+        FixedCategory(EXPENSE_SAVINGS, "攒着", "savings", CategoryType.EXPENSE, 6)
+
+    val all: List<FixedCategory> = expense + income + listOf(savings)
 
     /** 内置分类转换为同步模型（内置分类的 updatedAt 为 0，用户修改后才会变新） */
     val defaultSyncCategories: List<SyncCategory> = all.map { category ->
@@ -69,8 +76,12 @@ object FixedCategories {
     fun otherIdFor(type: String): Long =
         if (CategoryType.from(type) == CategoryType.INCOME) INCOME_OTHER else EXPENSE_OTHER
 
-    val expenseIds: Set<Long> = expense.map { it.id }.toSet()
+    /** 合法支出分类：包含「攒着」系统分类（用于同步文件的分类校验） */
+    val expenseIds: Set<Long> = (expense + savings).map { it.id }.toSet()
     val incomeIds: Set<Long> = income.map { it.id }.toSet()
+
+    /** 手动记账可选的支出分类（不含「攒着」） */
+    val manualExpenseIds: Set<Long> = expense.map { it.id }.toSet()
 
     /** 常量引用的 id 集合（用于迁移脚本） */
     val expenseIdList: List<Long> = expense.map { it.id }

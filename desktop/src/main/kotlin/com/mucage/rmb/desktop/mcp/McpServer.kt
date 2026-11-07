@@ -15,7 +15,7 @@ import java.nio.charset.StandardCharsets
  */
 object McpServer {
 
-    const val VERSION = "10.27.2"
+    const val VERSION = "10.27.3"
     private const val PROTOCOL_VERSION = "2024-11-05"
 
     fun run() {
@@ -84,9 +84,9 @@ object McpServer {
                 )
             ),
             "instructions" to JsonValue.Str(
-                "本地记账软件「此地无银三百两」电脑端账本工具。可查询/设置余额，记账、改账、删账，" +
-                    "管理分类，读取支出统计图表，以及导入/导出账本同步文件。金额单位一律为元。" +
-                    "调用前请先关闭桌面窗口，避免与界面同时写入。"
+                "本地记账软件「此地无银三百两」电脑端账本工具。可查询/设置总余额、攒着与可用，" +
+                    "配置自动攒着，记账、改账、删账，管理分类，读取支出统计图表，以及导入/导出账本同步文件。" +
+                    "金额单位一律为元。调用前请先关闭桌面窗口，避免与界面同时写入。"
             )
         )
     )

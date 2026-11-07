@@ -3,6 +3,7 @@ package com.mucage.rmb.data
 import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
+import com.mucage.sync.AutoSavePeriod
 
 /** 账目类型 */
 object RecordType {
@@ -22,7 +23,21 @@ data class BalanceEntity(
     val anchoredAt: Long = 0,         // 锚点时间（当天 0 点）：此时间之前的账目不计入余额
     val initialized: Boolean = false, // 首次启动是否已输入初始余额
     @ColumnInfo(defaultValue = "0")
-    val updatedAt: Long = 0           // 最近修改时间，用于两端同步时判断新旧
+    val updatedAt: Long = 0,          // 最近修改时间，用于两端同步时判断新旧
+    /** 攒着：总余额中预留出来、仅供查看的部分（不涉及真实资金搬移） */
+    @ColumnInfo(defaultValue = "0")
+    val savedCents: Long = 0,
+    @ColumnInfo(defaultValue = "0")
+    val autoSaveEnabled: Boolean = false,
+    @ColumnInfo(defaultValue = "MONTHLY")
+    val autoSavePeriod: String = AutoSavePeriod.MONTHLY.code,
+    @ColumnInfo(defaultValue = "0")
+    val autoSaveAmountCents: Long = 0,
+    @ColumnInfo(defaultValue = "0")
+    val autoSaveCountAsExpense: Boolean = false,
+    /** 上次结算到的周期起点；两端凭它防重复，并据此逐期补足 */
+    @ColumnInfo(defaultValue = "0")
+    val autoSaveLastAt: Long = 0
 )
 
 /** 资金用途分类（内置分类 + 用户自建分类） */
@@ -59,7 +74,10 @@ data class RecordEntity(
     val updatedAt: Long = System.currentTimeMillis(),
     /** 删除墓碑：界面不展示，但保留在库中并随同步文件导出，保证删除可跨端传播 */
     @ColumnInfo(defaultValue = "0")
-    val deleted: Boolean = false
+    val deleted: Boolean = false,
+    /** 账面上的「攒着」划转：不改变总余额；开启「视作支出」时会参与限额与统计 */
+    @ColumnInfo(defaultValue = "0")
+    val savingsTransfer: Boolean = false
 )
 
 /** 账目的限额豁免状态 */

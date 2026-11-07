@@ -187,12 +187,13 @@ internal object DesktopLedgerStore {
         )
     }
 
-    /** 保证每种类型都有可兜底的「其他」分类（即使另一端把它删掉了） */
+    /** 保证每种类型都有可兜底的「其他」分类，并确保系统分类「攒着」存在 */
     fun ensureFallbacks(categories: List<SyncCategory>): List<SyncCategory> {
         val result = categories.toMutableList()
         listOf(
             FixedCategories.EXPENSE_OTHER to CategoryType.EXPENSE.code,
-            FixedCategories.INCOME_OTHER to CategoryType.INCOME.code
+            FixedCategories.INCOME_OTHER to CategoryType.INCOME.code,
+            FixedCategories.EXPENSE_SAVINGS to CategoryType.EXPENSE.code
         ).forEach { (id, type) ->
             val existing = result.firstOrNull { it.id == id }
             if (existing == null) {
@@ -244,7 +245,9 @@ internal object DesktopLedgerStore {
         id: Long
     ): Pair<LedgerData, String>? {
         val target = data.categories.firstOrNull { it.id == id && !it.deleted } ?: return null
-        if (id == FixedCategories.EXPENSE_OTHER || id == FixedCategories.INCOME_OTHER) return null
+        if (id == FixedCategories.EXPENSE_OTHER || id == FixedCategories.INCOME_OTHER ||
+            id == FixedCategories.EXPENSE_SAVINGS
+        ) return null
         val now = System.currentTimeMillis()
         val fallback = FixedCategories.otherIdFor(target.type)
         val categories = data.categories.map {
@@ -263,4 +266,8 @@ internal object DesktopLedgerStore {
 
     fun visibleCategories(categories: List<SyncCategory>, type: String): List<SyncCategory> =
         categories.filter { it.type == type && !it.deleted }.sortedBy { it.sortOrder }
+
+    /** 手动记账/编辑可选的分类：不含系统分类「攒着」 */
+    fun selectableCategories(categories: List<SyncCategory>, type: String): List<SyncCategory> =
+        visibleCategories(categories, type).filter { it.id != FixedCategories.EXPENSE_SAVINGS }
 }

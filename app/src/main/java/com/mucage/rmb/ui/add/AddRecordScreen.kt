@@ -115,7 +115,13 @@ private fun AddRecordContent(
     var showDatePicker by remember { mutableStateOf(false) }
     var showTimePicker by remember { mutableStateOf(false) }
 
-    val categories by Repository.categoryDao.observeByType(type).collectAsState(initial = emptyList())
+    val allCategories by Repository.categoryDao.observeByType(type).collectAsState(initial = emptyList())
+    // 「攒着」是系统分类，只用于自动攒着的账面划转：新建时不出现，编辑划转记录时只保留它
+    val categories = if (editing?.savingsTransfer == true) {
+        allCategories.filter { it.id == com.mucage.sync.FixedCategories.EXPENSE_SAVINGS }
+    } else {
+        allCategories.filter { it.id != com.mucage.sync.FixedCategories.EXPENSE_SAVINGS }
+    }
 
     // 分类默认选中：编辑时保留原分类，否则取第一个；切换类型时自动落到新类型
     LaunchedEffect(categories) {
@@ -140,7 +146,9 @@ private fun AddRecordContent(
             limitExempt = editing?.limitExempt ?: LimitExempt.NONE,
             // 编辑时保留同步标识，仅刷新修改时间；新建由实体默认值生成
             syncId = editing?.syncId ?: java.util.UUID.randomUUID().toString(),
-            updatedAt = System.currentTimeMillis()
+            updatedAt = System.currentTimeMillis(),
+            deleted = editing?.deleted ?: false,
+            savingsTransfer = editing?.savingsTransfer ?: false
         )
         scope.launch {
             if (editing == null) {

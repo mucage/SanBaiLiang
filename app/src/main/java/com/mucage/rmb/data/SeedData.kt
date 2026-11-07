@@ -22,6 +22,13 @@ object SeedData {
     /** 收入分类（资金来源）：固定内置 */
     val incomeCategories: List<CategoryEntity> = FixedCategories.income.map { it.toEntity() }
 
+    /** 系统分类「攒着」：用于自动攒着生成的账面划转记录 */
+    val savingsCategory: CategoryEntity = FixedCategories.savings.toEntity()
+
+    /** 启动时补种的全部内置分类（含攒着） */
+    val allCategories: List<CategoryEntity> =
+        expenseCategories + incomeCategories + listOf(savingsCategory)
+
     /** 合法支出分类 id 集合 */
     val expenseCategoryIds: Set<Long> = FixedCategories.expenseIds
 

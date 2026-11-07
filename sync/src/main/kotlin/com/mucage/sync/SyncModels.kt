@@ -11,7 +11,12 @@ data class SyncRecord(
     val limitExempt: Int,
     val updatedAt: Long,
     /** 删除墓碑：为 true 时两端均隐藏该账目，但保留在同步文件中，保证删除也能跨端传播 */
-    val deleted: Boolean = false
+    val deleted: Boolean = false,
+    /**
+     * 账面上的「攒着」划转：只改变攒着/可用的划分，不改变总余额。
+     * 开启「视作支出」时会生成这种记录，用于计入限额与统计。
+     */
+    val savingsTransfer: Boolean = false
 )
 
 /** 分类（含用户自建分类）：id 为两端共用标识，updatedAt 用于「较新者胜出」的合并 */
@@ -30,7 +35,19 @@ data class SyncBalance(
     val balanceCents: Long,
     val anchoredAt: Long,
     val initialized: Boolean,
-    val updatedAt: Long
+    val updatedAt: Long,
+    /** 攒着：总余额中预留出来、仅供查看的部分（不涉及真实资金搬移） */
+    val savedCents: Long = 0L,
+    /** 自动攒着开关 */
+    val autoSaveEnabled: Boolean = false,
+    /** 结算周期：WEEKLY / MONTHLY / YEARLY */
+    val autoSavePeriod: String = AutoSavePeriod.MONTHLY.code,
+    /** 每期从可用转入攒着的固定金额 */
+    val autoSaveAmountCents: Long = 0L,
+    /** 转入是否同时生成一笔「攒着」支出，计入限额与统计 */
+    val autoSaveCountAsExpense: Boolean = false,
+    /** 上次结算到的周期起点；两端凭它防重复，并据此逐期补足 */
+    val autoSaveLastAt: Long = 0L
 )
 
 data class SyncPayload(

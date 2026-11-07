@@ -29,12 +29,18 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -47,6 +53,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.mucage.sync.AutoSavePeriod
+import com.mucage.sync.SyncBalance
 import com.mucage.sync.SyncCategory
 import java.io.File
 import kotlin.math.roundToInt
@@ -63,6 +71,8 @@ internal fun DesktopSettingsPage(
     onExport: () -> Unit,
     categories: List<SyncCategory>,
     onManageCategories: () -> Unit,
+    balance: SyncBalance,
+    onUpdateAuto: (Boolean?, String?, Long?, Boolean?) -> Unit,
     bgPath: String?,
     bgOpacity: Float,
     cardOpacity: Float,
@@ -71,7 +81,10 @@ internal fun DesktopSettingsPage(
     onBgOpacity: (Float) -> Unit,
     onCardOpacity: (Float) -> Unit
 ) {
-    val expenseCats = categories.filter { it.type == "EXPENSE" && !it.deleted }.sortedBy { it.sortOrder }
+    val expenseCats = categories.filter {
+        it.type == "EXPENSE" && !it.deleted &&
+            it.id != com.mucage.sync.FixedCategories.EXPENSE_SAVINGS
+    }.sortedBy { it.sortOrder }
     val incomeCats = categories.filter { it.type == "INCOME" && !it.deleted }.sortedBy { it.sortOrder }
     val preview = remember(bgPath) { DesktopImages.background(bgPath) }
 
@@ -172,6 +185,82 @@ internal fun DesktopSettingsPage(
                         }
                     )
                 }
+            }
+        }
+
+        // 自动攒着
+        SettingsCard("自动攒着") {
+            val period = AutoSavePeriod.from(balance.autoSavePeriod)
+            var amountText by remember { mutableStateOf(centsToInput(balance.autoSaveAmountCents)) }
+            LaunchedEffect(balance.autoSaveAmountCents) {
+                amountText = centsToInput(balance.autoSaveAmountCents)
+            }
+            val parsed = parseAmountToCents(amountText)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("按周期把「可用」转入「攒着」", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "只做账面划分，不涉及真实资金搬动；可用不足时跳过该期，错过的周期会逐期补足。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = balance.autoSaveEnabled,
+                    onCheckedChange = { onUpdateAuto(it, null, null, null) }
+                )
+            }
+            if (balance.autoSaveEnabled) {
+                Spacer(Modifier.height(10.dp))
+                Text("结算周期", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(4.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AutoSavePeriod.entries.forEach { item ->
+                        FilterChip(
+                            selected = period == item,
+                            onClick = { onUpdateAuto(null, item.code, null, null) },
+                            label = { Text(item.label) }
+                        )
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = amountText,
+                        onValueChange = { amountText = it.filter { c -> c.isDigit() || c == '.' }.take(12) },
+                        label = { Text("每期转入（元）") },
+                        singleLine = true,
+                        modifier = Modifier.width(200.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        enabled = parsed != null,
+                        onClick = { parsed?.let { onUpdateAuto(null, null, it, null) } }
+                    ) { Text("保存金额") }
+                }
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("视作支出", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "开启后生成一笔「攒着」支出，会计入手机端的日/月限额与两端统计；关闭则只做账面划分。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = balance.autoSaveCountAsExpense,
+                        onCheckedChange = { onUpdateAuto(null, null, null, it) }
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                val next = DesktopSavings.nextAt(balance)
+                Text(
+                    "上次结算：" + (if (balance.autoSaveLastAt > 0) formatDate(balance.autoSaveLastAt) else "尚未开始") +
+                        " · 下次结算：" + (next?.let(::formatDate) ?: "—"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
 

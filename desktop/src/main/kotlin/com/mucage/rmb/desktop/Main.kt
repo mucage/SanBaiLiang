@@ -41,6 +41,7 @@ import androidx.compose.material.icons.outlined.ReceiptLong
 import androidx.compose.material.icons.outlined.Redeem
 import androidx.compose.material.icons.outlined.Restaurant
 import androidx.compose.material.icons.outlined.Save
+import androidx.compose.material.icons.outlined.Savings
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.School
 import androidx.compose.material.icons.outlined.Search
@@ -94,9 +95,11 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
+import com.mucage.sync.AutoSavePeriod
 import com.mucage.sync.CategoryType
 import com.mucage.sync.FixedCategories
 import com.mucage.sync.MergeResult
+import com.mucage.sync.SavingsMath
 import com.mucage.sync.SyncBalance
 import com.mucage.sync.SyncCategory
 import com.mucage.sync.SyncCodec
@@ -203,7 +206,13 @@ private fun RememberWindowSize(window: java.awt.Window) {
 /** 主界面：本机账本自动保存 + 账目管理 + 统计 + 分类 + 设置 */
 @Composable
 private fun LedgerApp(initialFile: File?, owner: Frame) {
-    val initialLedger = remember { DesktopLedgerStore.load() }
+    // 启动时先补算一次自动攒着，避免电脑端长时间没打开而漏掉周期
+    val initialLedger = remember {
+        val loaded = DesktopLedgerStore.load()
+        val applied = DesktopSavings.apply(loaded)
+        if (applied.changed) DesktopLedgerStore.save(applied.data)
+        applied.data
+    }
     var records by remember { mutableStateOf(initialLedger.records) }
     var balance by remember { mutableStateOf(initialLedger.balance) }
     var categories by remember { mutableStateOf(initialLedger.categories) }
@@ -220,6 +229,8 @@ private fun LedgerApp(initialFile: File?, owner: Frame) {
     var editorTarget by remember { mutableStateOf<SyncRecord?>(null) }
     var showRecordEditor by remember { mutableStateOf(false) }
     var showBalanceEditor by remember { mutableStateOf(false) }
+    var showSavedEditor by remember { mutableStateOf(false) }
+    var showAvailableEditor by remember { mutableStateOf(false) }
     var showCategoryManager by remember { mutableStateOf(false) }
     var lastSavedAt by remember { mutableStateOf<Long?>(null) }
     /** 导入后若本机存在对方文件没有的账目，在设置页持续提示用户反向导出 */
@@ -387,7 +398,9 @@ private fun LedgerApp(initialFile: File?, owner: Frame) {
                         modifier = Modifier.width(312.dp).fillMaxHeight(),
                         balance = balance,
                         records = visibleRecords,
-                        onEditBalance = { showBalanceEditor = true }
+                        onEditBalance = { showBalanceEditor = true },
+                        onEditSaved = { showSavedEditor = true },
+                        onEditAvailable = { showAvailableEditor = true }
                     )
                     Spacer(Modifier.width(14.dp))
                     Box(Modifier.weight(1f).fillMaxSize()) {
@@ -481,6 +494,16 @@ private fun LedgerApp(initialFile: File?, owner: Frame) {
                         onExport = { exportToPhone() },
                         categories = categories,
                         onManageCategories = { showCategoryManager = true },
+                        balance = balance,
+                        onUpdateAuto = { enabled, period, amountCents, countAsExpense ->
+                            balance = DesktopSavings.updateAuto(
+                                LedgerData(records, balance, categories),
+                                enabled = enabled,
+                                period = period,
+                                amountCents = amountCents,
+                                countAsExpense = countAsExpense
+                            ).balance
+                        },
                         bgPath = bgPath,
                         bgOpacity = bgOpacity,
                         cardOpacity = cardOpacity,
@@ -542,9 +565,42 @@ private fun LedgerApp(initialFile: File?, owner: Frame) {
             current = balance,
             onDismiss = { showBalanceEditor = false },
             onSave = {
-                balance = it
+                val clamped = DesktopSavings.clampAfterTotalChange(
+                    LedgerData(records, it, categories)
+                )
+                balance = clamped.balance
                 showBalanceEditor = false
                 notify("余额已更新，导出给手机后即可同步")
+            }
+        )
+    }
+
+    if (showSavedEditor) {
+        val ledger = LedgerData(records, balance, categories)
+        BucketBalanceDialog(
+            title = "调整攒着",
+            hint = "总余额 ¥${formatCents(DesktopSavings.totalBalance(ledger))} 不变，只改变账面划分。当前攒着：",
+            currentCents = DesktopSavings.savedCents(ledger),
+            onDismiss = { showSavedEditor = false },
+            onSave = { cents ->
+                balance = DesktopSavings.setSaved(ledger, cents).balance
+                showSavedEditor = false
+                notify("攒着已调整，导出给手机后即可同步")
+            }
+        )
+    }
+
+    if (showAvailableEditor) {
+        val ledger = LedgerData(records, balance, categories)
+        BucketBalanceDialog(
+            title = "调整可用",
+            hint = "总余额 ¥${formatCents(DesktopSavings.totalBalance(ledger))} 不变，只改变账面划分。当前可用：",
+            currentCents = DesktopSavings.availableCents(ledger),
+            onDismiss = { showAvailableEditor = false },
+            onSave = { cents ->
+                balance = DesktopSavings.setAvailable(ledger, cents).balance
+                showAvailableEditor = false
+                notify("可用已调整，导出给手机后即可同步")
             }
         )
     }
@@ -695,7 +751,14 @@ private fun TabPill(text: String, icon: ImageVector, selected: Boolean, onClick:
 }
 
 @Composable
-private fun SummaryPanel(modifier: Modifier, balance: SyncBalance, records: List<SyncRecord>, onEditBalance: () -> Unit) {
+private fun SummaryPanel(
+    modifier: Modifier,
+    balance: SyncBalance,
+    records: List<SyncRecord>,
+    onEditBalance: () -> Unit,
+    onEditSaved: () -> Unit,
+    onEditAvailable: () -> Unit
+) {
     val zone = remember { ZoneId.systemDefault() }
     val today = LocalDate.now()
     val monthStart = remember { today.withDayOfMonth(1).atStartOfDay(zone).toInstant().toEpochMilli() }
@@ -709,11 +772,18 @@ private fun SummaryPanel(modifier: Modifier, balance: SyncBalance, records: List
     val todayExpense = records.filter { it.date in todayStart until tomorrowStart && it.type == CategoryType.EXPENSE.code }
         .sumOf { it.amountCents }
     val activeDays = monthRecords.map { it.day() }.distinct().size
-    // 与安卓端口径一致：总余额 = 锚点余额 + 基准日之后（含当天）的净收支
-    val flowSinceAnchor = records.filter { it.date >= balance.anchoredAt }.sumOf { record ->
-        if (record.type == CategoryType.INCOME.code) record.amountCents else -record.amountCents
+    // 与安卓端口径一致：总余额 = 锚点余额 + 基准日之后（含当天）的净收支；账面攒着划转不计入
+    val totalBalance = SavingsMath.totalBalance(balance, records)
+    val saved = SavingsMath.clampSaved(balance.savedCents, totalBalance)
+    val available = totalBalance - saved
+    val autoPeriod = AutoSavePeriod.from(balance.autoSavePeriod)
+    val nextAuto = DesktopSavings.nextAt(balance)
+    val autoText = when {
+        !balance.autoSaveEnabled -> "自动攒着：未开启（可在设置页开启）"
+        nextAuto != null -> "自动攒着：${autoPeriod.label} ¥${formatCents(balance.autoSaveAmountCents)} · 下次 ${formatDate(nextAuto)}" +
+            if (balance.autoSaveCountAsExpense) " · 计入限额" else ""
+        else -> "自动攒着：${autoPeriod.label} ¥${formatCents(balance.autoSaveAmountCents)}"
     }
-    val totalBalance = balance.balanceCents + flowSinceAnchor
 
     Surface(modifier = modifier, shape = RoundedCornerShape(18.dp), color = Color.White.copy(alpha = LocalCardAlpha.current)) {
         Column(Modifier.padding(16.dp)) {
@@ -736,6 +806,39 @@ private fun SummaryPanel(modifier: Modifier, balance: SyncBalance, records: List
                     }
                 }
                 Sticker(name = "nahida_cheer", size = 54.dp)
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                MiniBucketBox(
+                    label = "攒着",
+                    cents = saved,
+                    container = NahidaSoft,
+                    accent = NahidaGreen,
+                    onClick = onEditSaved,
+                    modifier = Modifier.weight(1f)
+                )
+                MiniBucketBox(
+                    label = "可用",
+                    cents = available,
+                    container = Color(0xFFF4F1E9),
+                    accent = Color(0xFF4C7C9B),
+                    onClick = onEditAvailable,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "总余额 = 攒着 + 可用，两者只是账面划分，不涉及真实资金搬动。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (balance.initialized) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    autoText,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (balance.autoSaveEnabled) NahidaGreen else MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
             Spacer(Modifier.height(10.dp))
             HorizontalDivider(color = NahidaGreen.copy(alpha = 0.16f))
@@ -763,6 +866,44 @@ private fun SummaryPanel(modifier: Modifier, balance: SyncBalance, records: List
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
+    }
+}
+
+/** 总余额面板里的攒着 / 可用小板块 */
+@Composable
+private fun MiniBucketBox(
+    label: String,
+    cents: Long,
+    container: Color,
+    accent: Color,
+    onClick: () -> Unit,
+    modifier: Modifier
+) {
+    Surface(
+        modifier = modifier.clickable(onClick = onClick),
+        shape = RoundedCornerShape(12.dp),
+        color = container
+    ) {
+        Column(Modifier.padding(horizontal = 10.dp, vertical = 9.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (label == "攒着") {
+                    Icon(Icons.Outlined.Savings, null, Modifier.size(13.dp), tint = accent)
+                    Spacer(Modifier.width(4.dp))
+                }
+                Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "¥${formatCents(cents)}",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = accent,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height(2.dp))
+            Text("点击调整", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -993,7 +1134,13 @@ private fun RecordEditorDialog(
     }
     var note by remember(initial) { mutableStateOf(initial?.note ?: "") }
 
-    val typeCategories = DesktopLedgerStore.visibleCategories(categories, type)
+    // 「攒着」是系统分类，普通记账不显示；编辑自动攒着生成的记录时只保留该分类
+    val typeCategories = if (initial?.savingsTransfer == true) {
+        DesktopLedgerStore.visibleCategories(categories, type)
+            .filter { it.id == FixedCategories.EXPENSE_SAVINGS }
+    } else {
+        DesktopLedgerStore.selectableCategories(categories, type)
+    }
     // 编辑老账目时若所选分类已被删除，回落到该类型的第一个可用分类
     if (categoryId !in typeCategories.map { it.id }) {
         categoryId = typeCategories.firstOrNull()?.id ?: FixedCategories.otherIdFor(type)
@@ -1011,7 +1158,7 @@ private fun RecordEditorDialog(
                     selected = type == CategoryType.EXPENSE.code,
                     onClick = {
                         type = CategoryType.EXPENSE.code
-                        categoryId = DesktopLedgerStore.visibleCategories(categories, type).firstOrNull()?.id
+                        categoryId = DesktopLedgerStore.selectableCategories(categories, type).firstOrNull()?.id
                             ?: FixedCategories.EXPENSE_OTHER
                     },
                     label = { Text("支出") }
@@ -1020,7 +1167,7 @@ private fun RecordEditorDialog(
                     selected = type == CategoryType.INCOME.code,
                     onClick = {
                         type = CategoryType.INCOME.code
-                        categoryId = DesktopLedgerStore.visibleCategories(categories, type).firstOrNull()?.id
+                        categoryId = DesktopLedgerStore.selectableCategories(categories, type).firstOrNull()?.id
                             ?: FixedCategories.INCOME_OTHER
                     },
                     label = { Text("收入") }
@@ -1095,7 +1242,9 @@ private fun RecordEditorDialog(
                                 note = note.trim(),
                                 date = date,
                                 limitExempt = initial?.limitExempt ?: 0,
-                                updatedAt = System.currentTimeMillis()
+                                updatedAt = System.currentTimeMillis(),
+                                deleted = initial?.deleted ?: false,
+                                savingsTransfer = initial?.savingsTransfer ?: false
                             )
                         )
                     }
@@ -1118,7 +1267,7 @@ private fun BalanceEditorDialog(current: SyncBalance, onDismiss: () -> Unit, onS
             Text("设置总余额", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(6.dp))
             Text(
-                "余额以基准日为准，之后新增的账目会自动在其上增减。",
+                "余额以基准日为准，之后新增的账目会自动在其上增减。保存时会保留当前攒着与自动攒着设置。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1152,7 +1301,7 @@ private fun BalanceEditorDialog(current: SyncBalance, onDismiss: () -> Unit, onS
                         val value = cents ?: return@Button
                         val date = dateMillis ?: return@Button
                         onSave(
-                            SyncBalance(
+                            current.copy(
                                 balanceCents = if (negative) -value else value,
                                 anchoredAt = date,
                                 initialized = true,
@@ -1160,6 +1309,54 @@ private fun BalanceEditorDialog(current: SyncBalance, onDismiss: () -> Unit, onS
                             )
                         )
                     }
+                ) { Text("保存") }
+            }
+        }
+    }
+}
+
+/** 调整攒着 / 可用的对话框：只改账面划分，总余额不变 */
+@Composable
+private fun BucketBalanceDialog(
+    title: String,
+    hint: String,
+    currentCents: Long,
+    onDismiss: () -> Unit,
+    onSave: (Long) -> Unit
+) {
+    var amountText by remember { mutableStateOf(centsToInput(currentCents)) }
+    val cents = parseAmountToCents(amountText)
+
+    EditorScrim(onDismiss) {
+        Column(Modifier.padding(22.dp)) {
+            Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                hint + "¥${formatCents(currentCents)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = amountText,
+                onValueChange = { amountText = it.filter { c -> c.isDigit() || c == '.' }.take(13) },
+                label = { Text("金额（元）") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "金额会限制在 0 到总余额之间；保存后导出给手机即可同步。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(18.dp))
+            Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                TextButton(onClick = onDismiss) { Text("取消") }
+                Spacer(Modifier.width(8.dp))
+                Button(
+                    enabled = cents != null,
+                    onClick = { cents?.let(onSave) }
                 ) { Text("保存") }
             }
         }

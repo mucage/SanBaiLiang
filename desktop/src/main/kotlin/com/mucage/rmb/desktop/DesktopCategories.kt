@@ -40,6 +40,7 @@ import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.Pets
 import androidx.compose.material.icons.outlined.Redeem
 import androidx.compose.material.icons.outlined.Restaurant
+import androidx.compose.material.icons.outlined.Savings
 import androidx.compose.material.icons.outlined.School
 import androidx.compose.material.icons.outlined.ShoppingBag
 import androidx.compose.material.icons.outlined.Smartphone
@@ -103,6 +104,7 @@ internal fun desktopCategoryIcon(key: String): ImageVector = when (key) {
     "finance" -> Icons.Outlined.TrendingUp
     "parttime" -> Icons.Outlined.Luggage
     "redpacket" -> Icons.Outlined.Redeem
+    "savings" -> Icons.Outlined.Savings
     else -> Icons.Outlined.MoreHoriz
 }
 
@@ -192,7 +194,10 @@ internal fun DesktopCategoryManagerDialog(
                         )
                     }
                     Spacer(Modifier.height(10.dp))
-                    val list = categories.filter { it.type == type && !it.deleted }.sortedBy { it.sortOrder }
+                    // 「攒着」是系统分类，不出现在分类管理里，避免被改名或删除
+                    val list = categories.filter {
+                        it.type == type && !it.deleted && it.id != FixedCategories.EXPENSE_SAVINGS
+                    }.sortedBy { it.sortOrder }
                     LazyColumn(Modifier.heightIn(max = 360.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(list, key = { it.id }) { category ->
                             Row(

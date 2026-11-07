@@ -4,9 +4,12 @@ import android.content.Context
 import com.mucage.rmb.util.DateUtils
 import com.mucage.rmb.util.formatCents
 import com.mucage.rmb.util.todayStartMillis
+import com.mucage.sync.AutoSavePeriod
 import com.mucage.sync.CategoryType
 import com.mucage.sync.FixedCategories
 import com.mucage.sync.MergeResult
+import com.mucage.sync.SavingsAuto
+import com.mucage.sync.SavingsMath
 import com.mucage.sync.SyncBalance
 import com.mucage.sync.SyncCategory
 import com.mucage.sync.SyncMerge
@@ -16,6 +19,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.math.max
 
 /** 全局数据仓库，封装数据库访问入口 */
 object Repository {
@@ -142,13 +146,19 @@ object Repository {
      * 手工记账的日期即为当天 00:00，故不能用精确到毫秒的时刻，否则当天新账目会被排除。
      */
     suspend fun setTotalBalance(cents: Long) {
+        val previous = balanceDao.get()
+        val anchor = todayStartMillis()
+        // 重设总额时保留攒着与自动攒着配置，只把攒着夹到新的总余额范围内
+        val newTotal = cents + recordDao.netFlowSince(anchor)
+        val saved = SavingsMath.clampSaved(previous?.savedCents ?: 0L, newTotal)
         balanceDao.upsert(
-            BalanceEntity(
+            (previous ?: BalanceEntity()).copy(
                 id = 1,
                 balanceCents = cents,
-                anchoredAt = todayStartMillis(),
+                anchoredAt = anchor,
                 initialized = true,
-                updatedAt = System.currentTimeMillis()
+                updatedAt = System.currentTimeMillis(),
+                savedCents = saved
             )
         )
     }
@@ -158,6 +168,146 @@ object Repository {
         val balance = balanceDao.get() ?: return null
         if (!balance.initialized) return null
         return balance.balanceCents + recordDao.netFlowSince(balance.anchoredAt)
+    }
+
+    /** 余额三件套：总余额 / 攒着 / 可用 */
+    data class BalanceSnapshot(
+        val totalCents: Long,
+        val savedCents: Long,
+        val availableCents: Long,
+        val balance: BalanceEntity
+    )
+
+    /** 自动攒着的执行结果 */
+    data class AutoSavingsApplyResult(
+        val transferredCents: Long,
+        val periods: Int,
+        val savedCents: Long
+    )
+
+    private suspend fun snapshotOf(balance: BalanceEntity): BalanceSnapshot {
+        val total = balance.balanceCents + recordDao.netFlowSince(balance.anchoredAt)
+        val saved = SavingsMath.clampSaved(balance.savedCents, total)
+        return BalanceSnapshot(total, saved, total - saved, balance)
+    }
+
+    /** 读取余额三件套（攒着会按总余额夹取，避免负数或超过总额） */
+    suspend fun balanceSnapshot(): BalanceSnapshot? {
+        val balance = balanceDao.get() ?: return null
+        if (!balance.initialized) return null
+        return snapshotOf(balance)
+    }
+
+    /** 手动调整「攒着」：总余额不变，只改攒着/可用的划分 */
+    suspend fun setSavedBalance(cents: Long): BalanceSnapshot? {
+        val balance = balanceDao.get() ?: return null
+        if (!balance.initialized) return null
+        val total = balance.balanceCents + recordDao.netFlowSince(balance.anchoredAt)
+        val saved = SavingsMath.clampSaved(cents, total)
+        val updated = balance.copy(savedCents = saved, updatedAt = System.currentTimeMillis())
+        balanceDao.upsert(updated)
+        return snapshotOf(updated)
+    }
+
+    /** 手动调整「可用」：总余额不变，攒着 = 总余额 - 可用 */
+    suspend fun setAvailableBalance(cents: Long): BalanceSnapshot? {
+        val balance = balanceDao.get() ?: return null
+        if (!balance.initialized) return null
+        val total = balance.balanceCents + recordDao.netFlowSince(balance.anchoredAt)
+        val available = cents.coerceIn(0L, max(total, 0L))
+        val saved = SavingsMath.clampSaved(total - available, total)
+        val updated = balance.copy(savedCents = saved, updatedAt = System.currentTimeMillis())
+        balanceDao.upsert(updated)
+        return snapshotOf(updated)
+    }
+
+    /**
+     * 更新自动攒着配置。
+     * - 首次开启或切换周期时，把结算游标重置到当前周期起点，下一周期才开始转入；
+     * - 关闭后再次开启同样重新开始，不会把关闭期间的周期一次性补上。
+     */
+    suspend fun updateAutoSavings(
+        enabled: Boolean? = null,
+        period: String? = null,
+        amountCents: Long? = null,
+        countAsExpense: Boolean? = null
+    ): BalanceSnapshot? {
+        val balance = balanceDao.get() ?: return null
+        if (!balance.initialized) return null
+        val nextEnabled = enabled ?: balance.autoSaveEnabled
+        val nextPeriod = period?.let { AutoSavePeriod.from(it).code } ?: balance.autoSavePeriod
+        val nextAmount = amountCents?.coerceAtLeast(0L) ?: balance.autoSaveAmountCents
+        val nextCount = countAsExpense ?: balance.autoSaveCountAsExpense
+        val turningOn = nextEnabled && !balance.autoSaveEnabled
+        val periodChanged = nextPeriod != balance.autoSavePeriod
+        var lastAt = balance.autoSaveLastAt
+        if (nextEnabled && (turningOn || periodChanged || lastAt <= 0L)) {
+            lastAt = SavingsAuto.periodStart(AutoSavePeriod.from(nextPeriod), System.currentTimeMillis())
+        }
+        val updated = balance.copy(
+            autoSaveEnabled = nextEnabled,
+            autoSavePeriod = nextPeriod,
+            autoSaveAmountCents = nextAmount,
+            autoSaveCountAsExpense = nextCount,
+            autoSaveLastAt = lastAt,
+            updatedAt = System.currentTimeMillis()
+        )
+        balanceDao.upsert(updated)
+        return snapshotOf(updated)
+    }
+
+    /**
+     * 自动攒着补算：从上次结算的周期起点逐期检查，可用足够才转入。
+     * 开启「视作支出」时同时生成一笔「攒着」支出（计入限额与统计），否则只改账面金额。
+     */
+    suspend fun applyAutoSavings(now: Long = System.currentTimeMillis()): AutoSavingsApplyResult? {
+        val balance = balanceDao.get() ?: return null
+        if (!balance.initialized || !balance.autoSaveEnabled) return null
+        val total = balance.balanceCents + recordDao.netFlowSince(balance.anchoredAt)
+        val saved = SavingsMath.clampSaved(balance.savedCents, total)
+        val available = total - saved
+        val plan = SavingsAuto.plan(
+            lastAt = balance.autoSaveLastAt,
+            periodCode = balance.autoSavePeriod,
+            now = now,
+            availableCents = available,
+            amountCents = balance.autoSaveAmountCents
+        )
+        if (plan.steps.isEmpty() && plan.anchorAt == balance.autoSaveLastAt) return null
+
+        val period = AutoSavePeriod.from(balance.autoSavePeriod)
+        var newSaved = saved
+        plan.steps.forEach { step ->
+            newSaved += step.amountCents
+            if (balance.autoSaveCountAsExpense) {
+                recordDao.insert(
+                    RecordEntity(
+                        amountCents = step.amountCents,
+                        type = RecordType.EXPENSE,
+                        categoryId = FixedCategories.EXPENSE_SAVINGS,
+                        note = "自动攒着（${period.label}）",
+                        date = step.boundaryAt,
+                        limitExempt = LimitExempt.NONE,
+                        updatedAt = System.currentTimeMillis(),
+                        savingsTransfer = true
+                    )
+                )
+            }
+        }
+        if (plan.steps.isNotEmpty() || plan.anchorAt != balance.autoSaveLastAt) {
+            balanceDao.upsert(
+                balance.copy(
+                    savedCents = newSaved,
+                    autoSaveLastAt = plan.anchorAt,
+                    updatedAt = System.currentTimeMillis()
+                )
+            )
+        }
+        return AutoSavingsApplyResult(
+            transferredCents = plan.steps.sumOf { it.amountCents },
+            periods = plan.steps.size,
+            savedCents = newSaved
+        )
     }
 
     /** 组装导出用的同步数据（全部账目 + 余额锚点 + 分类定义） */
@@ -177,14 +327,21 @@ object Repository {
                     date = record.date,
                     limitExempt = record.limitExempt,
                     updatedAt = record.updatedAt,
-                    deleted = record.deleted
+                    deleted = record.deleted,
+                    savingsTransfer = record.savingsTransfer
                 )
             },
             balance = SyncBalance(
                 balanceCents = balance?.balanceCents ?: 0L,
                 anchoredAt = balance?.anchoredAt ?: 0L,
                 initialized = balance?.initialized ?: false,
-                updatedAt = balance?.updatedAt ?: 0L
+                updatedAt = balance?.updatedAt ?: 0L,
+                savedCents = balance?.savedCents ?: 0L,
+                autoSaveEnabled = balance?.autoSaveEnabled ?: false,
+                autoSavePeriod = balance?.autoSavePeriod ?: AutoSavePeriod.MONTHLY.code,
+                autoSaveAmountCents = balance?.autoSaveAmountCents ?: 0L,
+                autoSaveCountAsExpense = balance?.autoSaveCountAsExpense ?: false,
+                autoSaveLastAt = balance?.autoSaveLastAt ?: 0L
             ),
             categories = categoryDao.getAll().map { it.toSyncCategory() }
         )
@@ -322,7 +479,8 @@ object Repository {
                         limitExempt = record.limitExempt,
                         syncId = record.syncId,
                         updatedAt = record.updatedAt,
-                        deleted = record.deleted
+                        deleted = record.deleted,
+                        savingsTransfer = record.savingsTransfer
                     )
                 )
                 inserted++
@@ -336,7 +494,8 @@ object Repository {
                         date = record.date,
                         limitExempt = record.limitExempt,
                         updatedAt = record.updatedAt,
-                        deleted = record.deleted
+                        deleted = record.deleted,
+                        savingsTransfer = record.savingsTransfer
                     )
                 )
                 updated++
@@ -346,16 +505,25 @@ object Repository {
         }
 
         val localBalance = balanceDao.get()?.let {
-            SyncBalance(it.balanceCents, it.anchoredAt, it.initialized, it.updatedAt)
+            SyncBalance(
+                it.balanceCents, it.anchoredAt, it.initialized, it.updatedAt,
+                it.savedCents, it.autoSaveEnabled, it.autoSavePeriod,
+                it.autoSaveAmountCents, it.autoSaveCountAsExpense, it.autoSaveLastAt
+            )
         }
         val balanceUpdated = if (SyncMerge.shouldTakeBalance(payload.balance, localBalance)) {
             balanceDao.upsert(
-                BalanceEntity(
-                    id = 1,
+                (balanceDao.get() ?: BalanceEntity()).copy(
                     balanceCents = payload.balance.balanceCents,
                     anchoredAt = payload.balance.anchoredAt,
                     initialized = true,
-                    updatedAt = payload.balance.updatedAt
+                    updatedAt = payload.balance.updatedAt,
+                    savedCents = payload.balance.savedCents,
+                    autoSaveEnabled = payload.balance.autoSaveEnabled,
+                    autoSavePeriod = AutoSavePeriod.from(payload.balance.autoSavePeriod).code,
+                    autoSaveAmountCents = payload.balance.autoSaveAmountCents,
+                    autoSaveCountAsExpense = payload.balance.autoSaveCountAsExpense,
+                    autoSaveLastAt = payload.balance.autoSaveLastAt
                 )
             )
             true

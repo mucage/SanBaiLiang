@@ -1,11 +1,14 @@
 package com.mucage.rmb.desktop.mcp
 
 import com.mucage.rmb.desktop.DesktopLedgerStore
+import com.mucage.rmb.desktop.DesktopSavings
 import com.mucage.rmb.desktop.LedgerData
 import com.mucage.rmb.desktop.sortRecords
+import com.mucage.sync.AutoSavePeriod
 import com.mucage.sync.CategoryType
 import com.mucage.sync.FixedCategories
 import com.mucage.sync.JsonValue
+import com.mucage.sync.SavingsMath
 import com.mucage.sync.SyncCategory
 import com.mucage.sync.SyncRecord
 import java.io.File
@@ -47,18 +50,59 @@ internal object McpTools {
     val tools: List<McpTool> = listOf(
         McpTool(
             name = "get_balance",
-            description = "查询当前总余额（余额锚点 + 锚点后的收支净额）。返回是否已初始化、余额、锚点信息与账目数量。",
+            description = "查询余额拆分：总余额 = 攒着 + 可用。返回总余额、攒着、可用、锚点信息、自动攒着配置与账目数量。",
             schema = schema(emptyList()),
             call = { getBalance() }
         ),
         McpTool(
             name = "set_balance",
-            description = "设置当前总余额（元）。与界面上的「设置余额」一致：以今天 0 点为锚点，之后的账目会在此基础上增减。",
+            description = "设置当前总余额（元）。与界面上的「设置余额」一致：以今天 0 点为锚点，之后的账目会在此基础上增减；会保留攒着与自动攒着配置。",
             schema(
                 required = listOf("amount"),
                 props = mapOf("amount" to numberProp("新的总余额，单位元，可为小数"))
             ),
             call = { setBalance(it) }
+        ),
+        McpTool(
+            name = "set_savings",
+            description = "调整「攒着」金额（元）。只改变账面划分，总余额不变；会自动夹在 0 到总余额之间。",
+            schema(
+                required = listOf("amount"),
+                props = mapOf("amount" to numberProp("新的攒着金额，单位元，不能为负"))
+            ),
+            call = { setSavings(it) }
+        ),
+        McpTool(
+            name = "set_available",
+            description = "调整「可用」金额（元）。只改变账面划分，总余额不变；攒着 = 总余额 - 可用。",
+            schema(
+                required = listOf("amount"),
+                props = mapOf("amount" to numberProp("新的可用金额，单位元，不能为负"))
+            ),
+            call = { setAvailable(it) }
+        ),
+        McpTool(
+            name = "set_savings_auto",
+            description = "设置自动攒着：按每周/每月/每年把可用的一部分转入攒着。可用不足时跳过该期，错过的周期逐期补足。参数只需传要改的项。",
+            schema(
+                props = mapOf(
+                    "enabled" to JsonValue.Obj(
+                        linkedMapOf(
+                            "type" to JsonValue.Str("boolean"),
+                            "description" to JsonValue.Str("是否开启自动攒着")
+                        )
+                    ),
+                    "period" to stringProp("周期：每周 / 每月 / 每年，或 WEEKLY / MONTHLY / YEARLY"),
+                    "amount" to numberProp("每期转入金额，单位元"),
+                    "countAsExpense" to JsonValue.Obj(
+                        linkedMapOf(
+                            "type" to JsonValue.Str("boolean"),
+                            "description" to JsonValue.Str("是否生成一笔「攒着」支出并计入限额与统计")
+                        )
+                    )
+                )
+            ),
+            call = { setSavingsAuto(it) }
         ),
         McpTool(
             name = "list_records",
@@ -194,6 +238,8 @@ internal object McpTools {
         val name = params.fields["name"]?.str() ?: throw McpToolException("缺少工具名 name")
         val tool = tools.firstOrNull { it.name == name } ?: throw McpToolException("未知工具：$name")
         val args = params.fields["arguments"]?.obj() ?: JsonValue.Obj(emptyMap())
+        // 每次调用前先补算自动攒着，保证 Agent 读到的是当前周期的账面结果
+        applyPendingAutoSavings()
         val payload = tool.call(args)
         return jObj(
             "content" to JsonValue.Arr(
@@ -214,17 +260,39 @@ internal object McpTools {
     private fun getBalance(): JsonValue {
         val data = DesktopLedgerStore.load()
         val balance = data.balance
+        val initialized = balance.initialized && balance.anchoredAt > 0
         val current = currentBalance(data)
+        val saved = DesktopSavings.savedCents(data)
+        val available = DesktopSavings.availableCents(data)
+        val period = AutoSavePeriod.from(balance.autoSavePeriod)
+        val next = DesktopSavings.nextAt(balance)
         return jObj(
-            "initialized" to JsonValue.Bool(balance.initialized && balance.anchoredAt > 0),
+            "initialized" to JsonValue.Bool(initialized),
+            "total" to amountNode(current ?: 0L),
+            "totalCents" to JsonValue.Num((current ?: 0L).toString()),
+            "saved" to amountNode(saved),
+            "savedCents" to JsonValue.Num(saved.toString()),
+            "available" to amountNode(available),
+            "availableCents" to JsonValue.Num(available.toString()),
+            // 兼容旧调用方：balance 仍表示总余额
             "balance" to amountNode(current ?: 0L),
             "balanceCents" to JsonValue.Num((current ?: 0L).toString()),
             "anchorBalance" to amountNode(balance.balanceCents),
             "anchoredAt" to JsonValue.Str(formatDateTime(balance.anchoredAt)),
             "recordCount" to JsonValue.Num(data.records.count { !it.deleted }.toString()),
+            "autoSave" to jObj(
+                "enabled" to JsonValue.Bool(balance.autoSaveEnabled),
+                "period" to JsonValue.Str(period.code),
+                "periodLabel" to JsonValue.Str(period.label),
+                "amount" to amountNode(balance.autoSaveAmountCents),
+                "amountCents" to JsonValue.Num(balance.autoSaveAmountCents.toString()),
+                "countAsExpense" to JsonValue.Bool(balance.autoSaveCountAsExpense),
+                "lastAt" to JsonValue.Str(formatDateTime(balance.autoSaveLastAt)),
+                "nextAt" to JsonValue.Str(next?.let(::formatDateTime).orEmpty())
+            ),
             "hint" to JsonValue.Str(
                 if (current == null) "尚未设置余额，可调用 set_balance 设置"
-                else "余额 = 锚点余额 + 锚点之后的收入 - 支出"
+                else "总余额 = 锚点余额 + 锚点之后的收入 - 支出；攒着 + 可用 = 总余额，账面划转不影响总余额"
             )
         )
     }
@@ -233,22 +301,113 @@ internal object McpTools {
         val cents = args.amountCents() ?: throw McpToolException("参数 amount 必须是数字（单位元）")
         val data = DesktopLedgerStore.load()
         val anchor = startOfToday()
-        val updated = data.copy(
-            balance = data.balance.copy(
-                balanceCents = cents,
-                anchoredAt = anchor,
-                initialized = true,
-                updatedAt = System.currentTimeMillis()
-            )
+        val updatedBalance = data.balance.copy(
+            balanceCents = cents,
+            anchoredAt = anchor,
+            initialized = true,
+            updatedAt = System.currentTimeMillis()
+        )
+        // 保留攒着与自动攒着配置，只把攒着夹到新的总余额范围内
+        val updated = DesktopSavings.clampAfterTotalChange(data.copy(balance = updatedBalance))
+        persist(updated)
+        return balanceResult(updated, "已以今天 0 点为锚点设置总余额")
+    }
+
+    private fun setSavings(args: JsonValue.Obj): JsonValue {
+        val cents = args.amountCents() ?: throw McpToolException("参数 amount 必须是数字（单位元）")
+        if (cents < 0L) throw McpToolException("攒着金额不能为负数")
+        val data = DesktopLedgerStore.load()
+        requireInitialized(data)
+        val updated = DesktopSavings.setSaved(data, cents)
+        persist(updated)
+        return balanceResult(updated, "攒着已调整；总余额不变，只改变账面划分")
+    }
+
+    private fun setAvailable(args: JsonValue.Obj): JsonValue {
+        val cents = args.amountCents() ?: throw McpToolException("参数 amount 必须是数字（单位元）")
+        if (cents < 0L) throw McpToolException("可用金额不能为负数")
+        val data = DesktopLedgerStore.load()
+        requireInitialized(data)
+        val updated = DesktopSavings.setAvailable(data, cents)
+        persist(updated)
+        return balanceResult(updated, "可用已调整；总余额不变，只改变账面划分")
+    }
+
+    private fun setSavingsAuto(args: JsonValue.Obj): JsonValue {
+        val data = DesktopLedgerStore.load()
+        requireInitialized(data)
+        val periodRaw = args.fields["period"]?.str()?.trim().orEmpty()
+        val period = if (periodRaw.isBlank()) null else {
+            normalizePeriod(periodRaw)
+                ?: throw McpToolException("无法识别的 period：$periodRaw（应为 每周/每月/每年）")
+        }
+        val enabled = args.fields["enabled"]?.bool()
+        val amount = if (args.fields.containsKey("amount")) {
+            args.amountCents() ?: throw McpToolException("参数 amount 必须是数字（单位元）")
+        } else null
+        if (amount != null && amount < 0L) throw McpToolException("每期金额不能为负数")
+        val countAsExpense = args.fields["countAsExpense"]?.bool()
+        val updated = DesktopSavings.updateAuto(
+            data,
+            enabled = enabled,
+            period = period,
+            amountCents = amount,
+            countAsExpense = countAsExpense
         )
         persist(updated)
+        val balance = updated.balance
+        val currentPeriod = AutoSavePeriod.from(balance.autoSavePeriod)
+        val next = DesktopSavings.nextAt(balance)
         return jObj(
             "ok" to JsonValue.Bool(true),
-            "balance" to amountNode(currentBalance(updated) ?: cents),
-            "balanceCents" to JsonValue.Num((currentBalance(updated) ?: cents).toString()),
-            "anchoredAt" to JsonValue.Str(formatDateTime(anchor)),
-            "hint" to JsonValue.Str("已以今天 0 点为锚点设置余额")
+            "enabled" to JsonValue.Bool(balance.autoSaveEnabled),
+            "period" to JsonValue.Str(currentPeriod.code),
+            "periodLabel" to JsonValue.Str(currentPeriod.label),
+            "amount" to amountNode(balance.autoSaveAmountCents),
+            "amountCents" to JsonValue.Num(balance.autoSaveAmountCents.toString()),
+            "countAsExpense" to JsonValue.Bool(balance.autoSaveCountAsExpense),
+            "lastAt" to JsonValue.Str(formatDateTime(balance.autoSaveLastAt)),
+            "nextAt" to JsonValue.Str(next?.let(::formatDateTime).orEmpty()),
+            "hint" to JsonValue.Str(
+                "首次开启或切换周期会从当前周期起点重新计算，下一周期才转入；可用不足时跳过该期"
+            )
         )
+    }
+
+    private fun balanceResult(data: LedgerData, hint: String): JsonValue {
+        val total = currentBalance(data) ?: 0L
+        val saved = DesktopSavings.savedCents(data)
+        val available = DesktopSavings.availableCents(data)
+        return jObj(
+            "ok" to JsonValue.Bool(true),
+            "total" to amountNode(total),
+            "totalCents" to JsonValue.Num(total.toString()),
+            "saved" to amountNode(saved),
+            "savedCents" to JsonValue.Num(saved.toString()),
+            "available" to amountNode(available),
+            "availableCents" to JsonValue.Num(available.toString()),
+            "hint" to JsonValue.Str(hint)
+        )
+    }
+
+    private fun requireInitialized(data: LedgerData) {
+        if (!data.balance.initialized || data.balance.anchoredAt <= 0) {
+            throw McpToolException("尚未设置余额，请先调用 set_balance 设置总余额")
+        }
+    }
+
+    /** 每次工具调用前补算自动攒着；只有产生变化时才写盘 */
+    private fun applyPendingAutoSavings() {
+        val data = DesktopLedgerStore.load()
+        val applied = DesktopSavings.apply(data)
+        if (applied.changed) persist(applied.data)
+    }
+
+    private fun normalizePeriod(raw: String): String? = when (raw.trim().uppercase(Locale.US)) {
+        "WEEKLY", "每周", "周", "周结" -> AutoSavePeriod.WEEKLY.code
+        "MONTHLY", "每月", "月", "月结" -> AutoSavePeriod.MONTHLY.code
+        "YEARLY", "每年", "年", "年结" -> AutoSavePeriod.YEARLY.code
+        else -> null
     }
 
     // ---------------- 账目 ----------------
@@ -381,8 +540,11 @@ internal object McpTools {
         val type = args.fields["type"]?.str()?.takeIf { it.isNotBlank() }?.let {
             normalizeType(it) ?: throw McpToolException("无法识别的 type：$it")
         }
-        val list = data.categories.filter { !it.deleted && (type == null || it.type == type) }
-            .sortedWith(compareBy({ it.type }, { it.sortOrder }))
+        // 「攒着」是系统分类，不出现在可手动记账的分类列表里
+        val list = data.categories.filter {
+            !it.deleted && (type == null || it.type == type) &&
+                it.id != FixedCategories.EXPENSE_SAVINGS
+        }.sortedWith(compareBy({ it.type }, { it.sortOrder }))
         return jObj(
             "count" to JsonValue.Num(list.size.toString()),
             "categories" to JsonValue.Arr(list.map { categoryJson(it) })
@@ -413,6 +575,9 @@ internal object McpTools {
         val data = DesktopLedgerStore.load()
         val target = data.categories.firstOrNull { it.id == id && !it.deleted }
             ?: throw McpToolException("找不到分类：$id")
+        if (id == FixedCategories.EXPENSE_SAVINGS) {
+            throw McpToolException("「攒着」是系统分类，不能改名或更换图标")
+        }
         val name = args.fields["name"]?.str()?.trim()?.takeIf { it.isNotEmpty() } ?: target.name
         val icon = args.fields["icon"]?.str()?.trim()?.takeIf { it.isNotEmpty() } ?: target.icon
         val next = DesktopLedgerStore.updateCategory(data.categories, id, name, icon)
@@ -601,8 +766,9 @@ internal object McpTools {
     private fun currentBalance(data: LedgerData): Long? {
         val balance = data.balance
         if (!balance.initialized || balance.anchoredAt <= 0) return null
+        // 账面「攒着」划转不改变总余额
         val flow = data.records
-            .filter { !it.deleted && it.date >= balance.anchoredAt }
+            .filter { !it.deleted && !it.savingsTransfer && it.date >= balance.anchoredAt }
             .sumOf { if (it.type == CategoryType.INCOME.code) it.amountCents else -it.amountCents }
         return balance.balanceCents + flow
     }
@@ -623,7 +789,9 @@ internal object McpTools {
     }
 
     private fun resolveCategory(categories: List<SyncCategory>, raw: String?, type: String): SyncCategory? {
-        val visible = categories.filter { !it.deleted && it.type == type }
+        val visible = categories.filter {
+            !it.deleted && it.type == type && it.id != FixedCategories.EXPENSE_SAVINGS
+        }
         if (raw.isNullOrBlank()) {
             return visible.firstOrNull { it.id == FixedCategories.otherIdFor(type) }
         }
@@ -635,7 +803,9 @@ internal object McpTools {
     }
 
     private fun categoryError(categories: List<SyncCategory>, type: String): String {
-        val names = categories.filter { !it.deleted && it.type == type }.map { it.name }
+        val names = categories.filter {
+            !it.deleted && it.type == type && it.id != FixedCategories.EXPENSE_SAVINGS
+        }.map { it.name }
         val typeText = if (type == CategoryType.INCOME.code) "收入" else "支出"
         return "分类不存在。可用的${typeText}分类：" + names.joinToString("、")
     }
@@ -652,6 +822,7 @@ internal object McpTools {
         "category" to JsonValue.Str(categoryName(categories, record)),
         "note" to JsonValue.Str(record.note),
         "limitExempt" to JsonValue.Num(record.limitExempt.toString()),
+        "savingsTransfer" to JsonValue.Bool(record.savingsTransfer),
         "deleted" to JsonValue.Bool(record.deleted)
     )
 

@@ -125,6 +125,8 @@ private fun MainApp() {
     LifecycleResumeEffect(Unit) {
         NotificationHelper.cancel(context)
         scope.launch {
+            // 进入应用先补算自动攒着，再检查限额（若开启「视作支出」，新记录会参与本次限额判断）
+            Repository.applyAutoSavings()
             MonthlyLimit.check(context)
             DailyLimit.check(context)
         }

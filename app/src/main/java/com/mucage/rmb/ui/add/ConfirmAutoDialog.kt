@@ -71,7 +71,9 @@ fun ConfirmAutoRecordDialog(pending: AutoPendingEntity, onDismiss: () -> Unit) {
         mutableStateOf(pending.merchant.ifEmpty { pending.sourceLabel })
     }
 
-    val categories by Repository.categoryDao.observeByType(type).collectAsState(initial = emptyList())
+    val allCategories by Repository.categoryDao.observeByType(type).collectAsState(initial = emptyList())
+    // 「攒着」是系统分类，不出现在自动记账确认的分类选择里
+    val categories = allCategories.filter { it.id != com.mucage.sync.FixedCategories.EXPENSE_SAVINGS }
 
     // 默认选中分类：取该类型第一个
     LaunchedEffect(categories) {
