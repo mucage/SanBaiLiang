@@ -225,6 +225,11 @@ abstract class AppDatabase : RoomDatabase() {
                             "'${category.type}',${category.sortOrder},0,0)"
                     )
                 }
+                // 「攒着」是系统分类，即使被旧版同步文件盖了墓碑也要恢复
+                db.execSQL(
+                    "UPDATE categories SET deleted = 0, updatedAt = 0 " +
+                        "WHERE id = ${SeedData.savingsCategory.id}"
+                )
             }
         }
     }

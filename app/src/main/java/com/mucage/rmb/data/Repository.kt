@@ -381,6 +381,8 @@ object Repository {
 
     /** 修改分类名称/图标；同类型下重名时返回 false */
     suspend fun updateCategory(id: Long, name: String, icon: String): Boolean {
+        // 「攒着」是系统分类，不允许改名或更换图标
+        if (id == FixedCategories.EXPENSE_SAVINGS) return false
         val category = categoryDao.getById(id)?.takeIf { !it.deleted } ?: return false
         val trimmed = name.trim()
         if (trimmed.isEmpty()) return false
@@ -398,7 +400,9 @@ object Repository {
      */
     suspend fun deleteCategory(id: Long): Boolean {
         val category = categoryDao.getById(id)?.takeIf { !it.deleted } ?: return false
-        if (id == FixedCategories.EXPENSE_OTHER || id == FixedCategories.INCOME_OTHER) return false
+        if (id == FixedCategories.EXPENSE_OTHER || id == FixedCategories.INCOME_OTHER ||
+            id == FixedCategories.EXPENSE_SAVINGS
+        ) return false
         val now = System.currentTimeMillis()
         val fallback = FixedCategories.otherIdFor(category.type)
         if (id != fallback) {
@@ -428,7 +432,8 @@ object Repository {
                 type = incoming.type,
                 sortOrder = incoming.sortOrder,
                 updatedAt = incoming.updatedAt,
-                deleted = incoming.deleted
+                // 「攒着」是系统分类：不接受删除墓碑，避免自动攒着记录失去分类
+                deleted = if (incoming.id == FixedCategories.EXPENSE_SAVINGS) false else incoming.deleted
             )
             when {
                 local == null -> {
